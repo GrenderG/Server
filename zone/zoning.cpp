@@ -37,6 +37,7 @@ extern WorldServer worldserver;
 extern Zone* zone;
 
 
+// this is the client checking IsZoneAvailable() but they haven't actually requested to zone there
 void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 	zoning = true;
 	if (app->size != sizeof(ZoneChange_Struct)) {
@@ -45,9 +46,9 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 		return;
 	}
 
-	LogInfo("Zone request from [{}]", GetName());
-	
 	ZoneChange_Struct* zc=(ZoneChange_Struct*)app->pBuffer;
+	LogInfo("Zone request from [{}] : char_name {}, zoneID {}, zone_reason {}, unk {} {}, success {}, error {} {} {}", GetName(),
+		std::string(zc->char_name), (int)zc->zoneID, (int)zc->zone_reason, (int)zc->unknown[0], (int)zc->unknown[1], (int)zc->success, zc->error[0], zc->error[1], zc->error[2]);
 
 	uint16 target_zone_id = 0;
 	ZonePoint* zone_point = nullptr;
@@ -168,9 +169,6 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 	safe_z = zone_data->safe_z;
 	min_status = zone_data->min_status;
 	min_level = zone_data->min_level;
-
-	if (target_zone_id == Zones::AIRPLANE)
-		BuffFadeAll(true);
 
 	std::string export_string = fmt::format(
 		"{} {}",
@@ -419,8 +417,12 @@ void Client::SendZoneError(ZoneChange_Struct *zc, int8 err)
 void Client::DoZoneSuccess(ZoneChange_Struct *zc, uint16 zone_id, float dest_x, float dest_y, float dest_z, float dest_h, int8 ignore_r) {
 	//this is called once the client is fully allowed to zone here
 	//it takes care of all the activities which occur when a client zones out
+	LogInfo("DoZoneSuccess {} mode {}", zone_id, (int)zone_mode);
 
 	SendLogoutPackets();
+
+	// it's a bit early to do these final things here, the client hasn't asked to zone yet, they are only asking permission to enter
+	// but this code makes the assumption they will zone very shortly.
 
 	// fade charmed pets
 	Mob* mypet = GetPet();
@@ -436,21 +438,21 @@ void Client::DoZoneSuccess(ZoneChange_Struct *zc, uint16 zone_id, float dest_x, 
 	// depop pet
 	DepopPet();
 
+	if (zone_id == Zones::AIRPLANE)
+		BuffFadeAll(true);
+
 	LogInfo("Zoning [{}] to: [{}] ([{}]) x = [{}], y = [{}], z = [{}]", m_pp.name, ZoneName(zone_id), zone_id, dest_x, dest_y, dest_z);
 
 	//set the player's coordinates in the new zone so they have them
 	//when they zone into it
-	m_Position.x = dest_x; //these coordinates will now be saved when ~client is called
-	m_Position.y = dest_y;
-	m_Position.z = dest_z;
-	m_Position.w = dest_h / 2.0f; // fix for zone heading
+	m_pp.x = dest_x;
+	m_pp.y = dest_y;
+	m_pp.z = dest_z;
 	m_pp.heading = dest_h;
 	m_pp.zone_id = zone_id;
-
+	m_lock_save_position = true;
 	//Force a save so its waiting for them when they zone
 	Save(2);
-
-	m_lock_save_position = true;
 
 	// vesuvias - zoneing to another zone so we need to the let the world server
 	//handle things with the client for a while

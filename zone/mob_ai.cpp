@@ -1401,6 +1401,17 @@ void Mob::AI_Process() {
 			return;
 		}
 
+		// don't attack zoning clients
+		if (GetTarget()->IsClient())
+		{
+			Client *client = GetTarget()->CastToClient();
+			if (!client->ClientDataLoaded() || !client->InZone())
+			{
+				RemoveFromHateList(GetTarget());
+				return;
+			}
+		}
+
 		if (AIloiter_timer->Enabled())
 			AIloiter_timer->Pause();
 

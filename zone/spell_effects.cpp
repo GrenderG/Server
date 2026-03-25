@@ -350,8 +350,10 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, int buffslot, int caster_lev
 				break;
 			}
 
-			case SE_Succor:
-			{				
+			case SE_Succor: // SE_Succor has a 1% failure chance (client handles it)
+			case SE_Teleport:	// gates, rings, circles, etc
+			case SE_Teleport2:
+			{
 				if(IsNPC())
 					break;
 
@@ -368,89 +370,13 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, int buffslot, int caster_lev
 				else
 					target_zone = spell.teleport_zone;
 
-				if(IsClient())
-				{
-					// Below are the spellid's for known evac/succor spells that send player
-					// to the current zone's safe points.
-
-					// Succor = 1567
-					// Lesser Succor = 2183
-					// Evacuate = 1628
-					// Lesser Evacuate = 2184
-					// Decession = 2558
-					// Greater Decession = 3244
-					// Egress = 1566
-
-					if(!target_zone) {
-#ifdef SPELL_EFFECT_SPAM
-						LogSpells("Succor/Evacuation Spell In Same Zone.");
-#endif
-						if (IsClient())
-							CastToClient()->MovePC(zone->GetZoneID(), x, y, z, heading, 0, EvacToSafeCoords);
-						else
-							GMMove(x, y, z, heading);
-					}
-					else {
-#ifdef SPELL_EFFECT_SPAM
-						LogSpells("Succor/Evacuation Spell To Another Zone.");
-#endif
-						if (IsClient())
-						{
-							uint32 zoneid = ZoneID(target_zone);
-							zone->ApplyRandomLoc(zoneid, x, y);
-							if (zoneid == zone->GetZoneID()) {
-								CastToClient()->MovePC(zoneid, x, y, z, heading);
-							}
-							else {
-								CastToClient()->zone_mode = ZoneSolicited;
-								CastToClient()->m_ZoneSummonLocation = glm::vec4(x, y, z, heading);
-								CastToClient()->zonesummon_id = zoneid;
-								CastToClient()->zonesummon_ignorerestrictions = 0;
-								SetHeading(heading);
-								CastToClient()->zoning_timer.Start();
-							}
-						}
-					}
-				}
-
-				break;
-			}
-			case SE_Teleport:	// gates, rings, circles, etc
-			case SE_Teleport2:
-			{
-				if (IsNPC())
-					break;
-
-				float x, y, z, heading;
-				const char *target_zone = nullptr;
-
-				x = static_cast<float>(spell.base[1]);
-				y = static_cast<float>(spell.base[0]);
-				z = static_cast<float>(spell.base[2]);
-				heading = static_cast<float>(spell.base[3]);
-
-				if(!strcmp(spell.teleport_zone, "same"))
-					target_zone = 0;
-				else
-					target_zone = spell.teleport_zone;
-
-				if (target_zone != 0 && strcmp(zone->GetShortName(), target_zone) != 0)
-				{
-					Mob* mypet = GetPet();
-					if (mypet) {
-						if (mypet->IsCharmedPet())
-							FadePetCharmBuff();
-						SetPet(0);
-					}
-				}
-
 #ifdef SPELL_EFFECT_SPAM
 				const char *efstr = "Teleport";
-				if(effect == SE_Teleport)
+				if (effect == SE_Teleport)
 					efstr = "Teleport v1";
-				else if(effect == SE_Teleport2)
+				else if (effect == SE_Teleport2)
 					efstr = "Teleport v2";
-				else if(effect == SE_Succor)
+				else if (effect == SE_Succor)
 					efstr = "Succor";
 
 				snprintf(effect_desc, _EDLEN,
@@ -458,35 +384,56 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, int buffslot, int caster_lev
 					efstr, x, y, z, heading, target_zone ? target_zone : "same zone"
 				);
 #endif
-				// teleports are not supposed to move NPCs.  Pets were used to kill the Seru earring NPCs, and Dain
+
 				if(IsClient())
 				{
-					if(!target_zone)
-						CastToClient()->MovePC(zone->GetZoneID(), x, y, z, heading);
+					uint32 zoneid = target_zone ? ZoneID(target_zone) : zone->GetZoneID();
+					bool expect_zone_reload = zoneid != GetZoneID();
+
+					// This will only prevent the server side zone. Our client will often initiate the zoning process
+					// as an unsoliciated request after the spell is cast. The server will then cancel that using SendZoneCancel().
+					if (!CastToClient()->CanBeInZone(zoneid))
+					{
+						break;
+					}
+
+					if ((spell_id == 2558                 // Decession
+						|| spell_id == 1567               // Succor
+						|| spell_id == 1627               // Abscond
+						|| spell_id == 1626               // Levant
+						|| spell_id == 2771               // Exodus
+						|| spell_id == 1628               // Evacuate
+						|| spell_id == 2183               // Lesser Succor
+						|| spell_id == 1566               // Egress
+						|| spell_id == 3244               // Greater Decession
+						|| spell_id == 2184               // Lesser Evacuate
+						|| spell_id == 3073)              // Banishment of Nightmares
+						&& !strcmp(spell.teleport_zone, "same"))
+					{
+						// these spells always disconnect/reconnect and reload the current zone instead of just warping
+						expect_zone_reload = true;
+						x = zone->GetSafePoint().x;
+						y = zone->GetSafePoint().y;
+						z = zone->GetSafePoint().z;
+						heading = 0.0f;
+					}
+					
+					if (expect_zone_reload)
+					{
+						// arm for zoning, but let the client take the next step - it may not end up zoning, there is a client side random element to this
+						zone->ApplyRandomLoc(zoneid, x, y);
+						CastToClient()->zone_mode = ZoneSolicited;
+						CastToClient()->m_ZoneSummonLocation = glm::vec4(x, y, z, heading);
+						CastToClient()->zonesummon_id = zoneid;
+						CastToClient()->zonesummon_ignorerestrictions = 0;
+						CastToClient()->zoning_timer.Start();
+					}
 					else
 					{
-						uint32 zoneid = ZoneID(target_zone);
-
-						// This will only prevent the server side zone. Our client will often initiate the zoning process
-						// as an unsoliciated request after the spell is cast. The server will then cancel that using SendZoneCancel().
-						if (!CastToClient()->CanBeInZone(zoneid))
-						{
-							break;
-						}
-						zone->ApplyRandomLoc(zoneid, x, y);
-						if (zoneid == zone->GetZoneID()) {
-							CastToClient()->MovePC(zoneid, x, y, z, heading);
-						}
-						else {
-							CastToClient()->zone_mode = ZoneSolicited;
-							CastToClient()->m_ZoneSummonLocation = glm::vec4(x, y, z, heading);
-							CastToClient()->zonesummon_id = zoneid;
-							CastToClient()->zonesummon_ignorerestrictions = 0;
-							SetHeading(heading);
-							CastToClient()->zoning_timer.Start();
-						}
+						// client will warp itself to the destination in the same zone
 					}
 				}
+
 				break;
 			}
 

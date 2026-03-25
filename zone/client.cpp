@@ -152,7 +152,7 @@ Client::Client(EQStreamInterface* ieqs) : Mob(
 	door_check_timer(1000),
 	mend_reset_timer(60000),
 	underwater_timer(1000),
-	zoning_timer(5000),
+	zoning_timer(15000),
 	m_Proximity(FLT_MAX, FLT_MAX, FLT_MAX), //arbitrary large number
 	m_ZoneSummonLocation(-2.0f,-2.0f,-2.0f,-2.0f),
 	m_AutoAttackPosition(0.0f, 0.0f, 0.0f, 0.0f),
