@@ -1804,6 +1804,7 @@ bool Mob::DetermineSpellTargets(uint16 spell_id, Mob *&spell_target, Mob *&ae_ce
 			if (spells[spell_id].targettype == ST_AETarget && spells[spell_id].aoerange == 0 && spells[spell_id].goodEffect == 0 && // Torment's Beckon is beneficial, only single target since it has 0 aoerange
 				(spells[spell_id].effectid[0] == SE_Teleport || spells[spell_id].effectid[0] == SE_Teleport2 )) // some PoP scripted teleport spells cast by NPCs
 			{
+				// Mechinetic Dislocation I-X, Penance of Flame, Penance of the Whip, Penance of Stone, Penance of Torture, Graveyard Sending1-3, Maze Sending1-3
 				CastAction = GroupSpell;
 			}
 			else
@@ -4076,10 +4077,6 @@ float Mob::GetAOERange(uint16 spell_id) {
 	float range;
 
 	range = spells[spell_id].aoerange;
-	if(range == 0)	//for TGB spells, they prolly do not have an aoe range
-		range = spells[spell_id].range;
-	if(range == 0)
-		range = 10;	//something....
 
 	if (IsClient()) {
 
