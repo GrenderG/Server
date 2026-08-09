@@ -841,8 +841,10 @@ bool Client::AddPacket(EQApplicationPacket** pApp, bool bAckreq) {
 		return false;
 	if(!zoneinpacket_timer.Enabled()) {
 		//drop the packet because it will never get sent.
-		if (pApp && (*pApp))
+		if (pApp && (*pApp)) {
 			delete *pApp;
+			*pApp = nullptr;
+		}
 		return(false);
 	}
 	auto c = std::make_unique<CLIENTPACKET>();
@@ -904,6 +906,7 @@ void Client::FastQueuePacket(EQApplicationPacket** app, bool ack_req, CLIENT_CON
 	if(client_state == PREDISCONNECTED)	{
 		if (app && (*app)) {
 			delete *app;
+			*app = nullptr;
 		}
 		return;
 	}
