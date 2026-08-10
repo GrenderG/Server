@@ -1290,7 +1290,7 @@ void Client::ChannelMessageSend(const char* from, const char* to, uint8 chan_num
 	cm->skill_in_language = lang_skill;
 	cm->chan_num = chan_num;
 	strcpy(&cm->message[0], message);
-	QueuePacket(&app);
+	QueuePacket(&app, true, CLIENT_CONNECTED); // the client does an unsafe msg_new_text and crashes if this arrives while zoning in before the local player is constructed
 
 	if ((chan_num == ChatChannel_Group) && (m_pp.languages[language] < Language::MaxValue)) {	// group message in unmastered language, check for skill up
 		if ((m_pp.languages[language] <= lang_skill) && (from != this->GetName()))
