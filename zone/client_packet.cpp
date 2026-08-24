@@ -2888,11 +2888,6 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 
 	m_EQPosition = glm::vec4(ppu->x_pos, ppu->y_pos, (float)ppu->z_pos/10.0f, ppu->heading);
 
-	if (GetZoneID() == Zones::AIRPLANE && m_EQPosition.z < -1200.0f) {
-		MovePC(Zones::FREPORTE, -1570.0f, -25.0f, 20.0f, 231.0f);
-		return;
-	}
-
 	//Check to see if PPU should trigger an update to the rewind position.
 	float rewind_x_diff = 0;
 	float rewind_y_diff = 0;
