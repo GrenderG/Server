@@ -1080,7 +1080,13 @@ bool EntityList::SendZoneDoorsBulk(EQApplicationPacket* app, Client *client)
 Entity *EntityList::GetEntityMob(uint16 id)
 {
 	auto it = mob_list.find(id);
-	if (it != mob_list.end())
+	// solar: when a Client or NPC dies and leaves a corpse, the retiring entity still exists but
+	// has its ID changed to 0 and the Corpse entity gains their original ID.  the maps that
+	// EntityList is using are not updated when this happens, and mob_list is checked before corpse_list
+	// so during the retiring period, which is at least 2 seconds for a dead client, GetMob returns
+	// the stale object with ID 0.
+	// this GetID() == id check allows the Client or NPC that turned into a Corpse to be rejected here
+	if (it != mob_list.end() && it->second != nullptr && it->second->GetID() == id)
 		return it->second;
 	return nullptr;
 }
@@ -1775,13 +1781,13 @@ void EntityList::QueueWearChange(Mob *sender, const EQApplicationPacket *app, bo
 }
 
 void EntityList::QueueClientsStatus(Mob *sender, const EQApplicationPacket *app,
-		bool ignore_sender, uint8 minstatus, uint8 maxstatus)
+		bool ignore_sender, uint8 minstatus, uint8 maxstatus, bool ackreq)
 {
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
 		if ((!ignore_sender || it->second != sender) &&
 				(it->second->Admin() >= minstatus && it->second->Admin() <= maxstatus))
-			it->second->QueuePacket(app);
+			it->second->QueuePacket(app, ackreq);
 
 		++it;
 	}
@@ -2619,7 +2625,7 @@ void EntityList::UpdateWho(bool iSendFullUpdate)
 
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
-		if (it->second->InZone()) {
+		if (it->second->HasWorldSession()) {
 			if (iSendFullUpdate) {
 				it->second->UpdateWho();
 			} else {
@@ -2862,6 +2868,15 @@ void EntityList::SendPositionUpdates(Client *client)
 		++it;
 	}
 	safe_delete(outapp);
+}
+
+void EntityList::FlushPositionUpdates()
+{
+	for (const auto &entry : client_list)
+	{
+		if (entry.second != nullptr)
+			entry.second->FlushPositionUpdates();
+	}
 }
 
 
@@ -4917,6 +4932,11 @@ void EntityList::SendClientAppearances(Client *to_client)
 			safe_delete(outapp);
 		}
 
+		if (c->IsLD())
+		{
+			c->SendAppearancePacket(AppearanceType::Linkdead, 1, false, true, to_client);
+		}
+
 		int levitate_value = c->GetFlyMode() ? c->GetFlyMode() : (c->FindType(SE_Levitate) ? 2 : 0);
 		if (levitate_value)
 		{
@@ -4928,7 +4948,8 @@ void EntityList::SendClientAppearances(Client *to_client)
 void EntityList::StopMobAI()
 {
 	for (auto &mob : mob_list) {
-		mob.second->AI_Stop();
+		if (!mob.second->IsClient())
+			mob.second->AI_Stop();
 		mob.second->AI_ShutDown();
 	}
 }

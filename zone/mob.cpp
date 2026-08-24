@@ -299,6 +299,7 @@ Mob::Mob(const char* in_name,
 	spellbonuses.AssistRange = -1;
 	SetPetID(0);
 	SetOwnerID(0);
+	SetCorpseID(0);
 	typeofpet = petCharmed;		//default to charmed...
 	summonerid = 0;
 	summonedClientPet = false;
@@ -416,11 +417,17 @@ Mob::~Mob()
 		}
 	}
 
-	EQApplicationPacket app;
-	CreateDespawnPacket(&app, !IsCorpse());
-	Corpse* corpse = entity_list.GetCorpseByID(GetID());
-	if(!corpse || (corpse && !corpse->IsPlayerCorpse()))
-		entity_list.QueueClients(this, &app, true);
+	const uint16 entity_id = GetID();
+	if (entity_id != 0)
+	{
+		Corpse *corpse = entity_list.GetCorpseByID(entity_id);
+		if (corpse == nullptr || !corpse->IsPlayerCorpse())
+		{
+			EQApplicationPacket app;
+			CreateDespawnPacket(&app, !IsCorpse());
+			entity_list.QueueClients(this, &app, true);
+		}
+	}
 
 	entity_list.RemoveFromTargets(this);
 	entity_list.RemoveFromDuelTargets(this);
@@ -1060,21 +1067,22 @@ void Mob::CreateDespawnPacket(EQApplicationPacket* app, bool Decay)
 void Mob::CreateHPPacket(EQApplicationPacket* app)
 {
 	this->IsFullHP=(cur_hp>=max_hp);
-	app->SetOpcode(OP_MobHealth);
-	app->size = sizeof(SpawnHPUpdate_Struct2);
+	app->SetOpcode(OP_HPUpdate);
+	app->size = sizeof(SpawnHPUpdate_Struct);
 	safe_delete_array(app->pBuffer);
 	app->pBuffer = new uchar[app->size];
 	memset(app->pBuffer, 0, app->size);
-	SpawnHPUpdate_Struct2* ds = (SpawnHPUpdate_Struct2*)app->pBuffer;
+	SpawnHPUpdate_Struct* ds = (SpawnHPUpdate_Struct*)app->pBuffer;
 
 	ds->spawn_id = GetID();
 	// they don't need to know the real hp
-	ds->hp = (int)GetHPRatio();
+	ds->cur_hp = (int)GetHPRatio();
+	ds->max_hp = 100;
 
 	// hp event
 	if (IsNPC() && (GetNextHPEvent() > 0))
 	{
-		if (ds->hp < GetNextHPEvent())
+		if (ds->cur_hp < GetNextHPEvent())
 		{
 			std::string export_string = fmt::format("{}", GetNextHPEvent());
 			SetNextHPEvent(-1);
@@ -1084,7 +1092,7 @@ void Mob::CreateHPPacket(EQApplicationPacket* app)
 
 	if (IsNPC() && (GetNextIncHPEvent() > 0))
 	{
-		if (ds->hp > GetNextIncHPEvent())
+		if (ds->cur_hp > GetNextIncHPEvent())
 		{
 			std::string export_string = fmt::format("{}", GetNextIncHPEvent());
 			SetNextIncHPEvent(-1);
@@ -1099,7 +1107,7 @@ void Mob::SendHPUpdate(bool skipnpc, bool sendtoself)
 	if (IsNPC() && skipnpc && RuleB(AlKabor, NPCsSendHPUpdatesPerTic))
 		return;
 
-	if (IsClient() && !CastToClient()->Connected())
+	if (IsClient() && !CastToClient()->InZone())
 		return;
 
 	if(IsClient())
@@ -1112,7 +1120,7 @@ void Mob::SendHPUpdate(bool skipnpc, bool sendtoself)
 	CreateHPPacket(&hp_app);
 
 	// send to people who have us targeted
-	entity_list.QueueClientsByTarget(this, &hp_app, false, 0, true, true, EQ::versions::bit_AllClients);
+	entity_list.QueueClientsByTarget(this, &hp_app, false, 0, false, true, EQ::versions::bit_AllClients);
 
 	// send to group
 	if(IsGrouped())
@@ -1144,18 +1152,18 @@ void Mob::SendHPUpdate(bool skipnpc, bool sendtoself)
 	// send to pet
 	if(GetPet() && GetPet()->IsClient())
 	{
-		GetPet()->CastToClient()->QueuePacket(&hp_app, true);
+		GetPet()->CastToClient()->QueuePacket(&hp_app, false);
 	}
 
 	// send to self - we need the actual hps here
-	if(IsClient() && sendtoself)
+	if(IsClient() && sendtoself && CastToClient()->Connected())
 	{
 		auto hp_app2 = new EQApplicationPacket(OP_HPUpdate, sizeof(SpawnHPUpdate_Struct));
 		SpawnHPUpdate_Struct* ds = (SpawnHPUpdate_Struct*)hp_app2->pBuffer;
-		ds->cur_hp = CastToClient()->GetHP() - itembonuses.HP;
+		ds->cur_hp = CastToClient()->GetHP() - itembonuses.HP; // client adds item HP on its own
 		ds->spawn_id = GetID();
-		ds->max_hp = CastToClient()->GetMaxHP() - itembonuses.HP;
-		CastToClient()->QueuePacket(hp_app2, true, Client::CLIENT_CONNECTED);
+		ds->max_hp = CastToClient()->GetMaxHP(); // client ignores this field for its self hp but the AK server sent the total max, including item HP
+		CastToClient()->QueuePacket(hp_app2, false, Client::CLIENT_CONNECTED);
 		safe_delete(hp_app2);
 	}
 }
@@ -1200,7 +1208,7 @@ void Mob::SendRealPosition()
 		SpawnPositionUpdates_Struct *spu = (SpawnPositionUpdates_Struct *)app->pBuffer;
 		spu->num_updates = 1; // hack - only one spawn position per update
 		MakeSpawnUpdateNoDelta(&spu->spawn_update);
-		entity_list.QueueClientsPosUpdate(this, app, true);
+		entity_list.QueueClientsPosUpdate(this, app, true, false);
 		safe_delete(app);
 	}
 }
@@ -1233,7 +1241,7 @@ void Mob::SendPosUpdate(uint8 iSendToSelf)
 		if (IsClient())
 		{
 			if (CastToClient()->gmhideme)
-				entity_list.QueueClientsStatus(this, app, (iSendToSelf == 0), CastToClient()->Admin(), 255);
+				entity_list.QueueClientsStatus(this, app, (iSendToSelf == 0), CastToClient()->Admin(), 255, false);
 			else
 				entity_list.QueueCloseClientsPrecalc(this, app, nullptr, (iSendToSelf == 0), nullptr, false);
 		}
@@ -2173,7 +2181,7 @@ bool Mob::HateSummon(Mob* summoned) {
 			if (newz != BEST_Z_INVALID && !in_liquid)
 				dest.z = newz;
 			if (target->IsClient()) {
-				target->CastToClient()->MovePC(zone->GetZoneID(), dest.x, dest.y, dest.z, target->GetHeading(), 0, SummonPC);
+				target->CastToClient()->MovePC(zone->GetZoneID(), dest.x, dest.y, dest.z, target->GetHeading() * 2.0f, 0, SummonPC);
 			}
 			else {
 				target->GMMove(dest.x, dest.y, dest.z, target->GetHeading());
@@ -3303,7 +3311,7 @@ bool Mob::DoKnockback(Mob *caster, float pushback, float pushup, bool send_packe
 		float dz = std::min(std::max(pushup, -64.0f), 63.0f);
 		//Message(MT_Broadcasts, "dx %0.2f dy %0.2f dz %0.2f", dx, dy, dz);
 		spu->spawn_update.delta_yzx.SetValue(dx, dy, dz);
-		entity_list.QueueCloseClients(this, app, false, 350, nullptr, true, FilterPCSpells);
+		entity_list.QueueCloseClients(this, app, false, 350, nullptr, false, FilterPCSpells);
 		safe_delete(app);
 	}
 

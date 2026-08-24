@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <utility>
 
 // for windows compile
 #ifndef _WINDOWS
@@ -38,6 +39,8 @@
 #include "../common/strings.h"
 #include "../common/data_verification.h"
 #include "../common/profanity_manager.h"
+#include "../common/opcodemgr.h"
+#include "../common/rdp/rdp_stream.h"
 #include "data_bucket.h"
 #include "position.h"
 #include "worldserver.h"
@@ -72,7 +75,7 @@ char entirecommand[255];
 
 void UpdateWindowTitle(char* iNewTitle);
 
-Client::Client(EQStreamInterface* ieqs) : Mob(
+Client::Client(std::unique_ptr<RDPStream> stream) : Mob(
 	"No name",	// name
 	"",	// lastname
 	0,	// cur_hp
@@ -126,12 +129,13 @@ Client::Client(EQStreamInterface* ieqs) : Mob(
 	),
 	//these must be listed in the order they appear in client.h
 	position_timer(250),
+	initial_connection_timer(InitialConnectionTimeoutMs),
 	get_auth_timer(5000),
 	camp_timer(35000),
 	process_timer(100),
 	stamina_timer(46000),
 	zoneinpacket_timer(1000),
-	linkdead_timer(RuleI(Zone,ClientLinkdeadMS)),
+	linkdead_timer(0),
 	dead_timer(2000),
 	global_channel_timer(1000),
 	fishing_timer(8000),
@@ -152,11 +156,11 @@ Client::Client(EQStreamInterface* ieqs) : Mob(
 	door_check_timer(1000),
 	mend_reset_timer(60000),
 	underwater_timer(1000),
-	zoning_timer(15000),
+	pending_zone_transfer_timer(ZoneTransferRequestTimeoutMs),
 	m_Proximity(FLT_MAX, FLT_MAX, FLT_MAX), //arbitrary large number
-	m_ZoneSummonLocation(-2.0f,-2.0f,-2.0f,-2.0f),
 	m_AutoAttackPosition(0.0f, 0.0f, 0.0f, 0.0f),
-	m_AutoAttackTargetLocation(0.0f, 0.0f, 0.0f)
+	m_AutoAttackTargetLocation(0.0f, 0.0f, 0.0f),
+	m_stream(std::move(stream))
 {
 	for (auto client_filter = FilterNone; client_filter < _FilterCount; client_filter = eqFilterType(client_filter + 1)) {
 		SetFilter(client_filter, FilterShow);
@@ -175,9 +179,17 @@ Client::Client(EQStreamInterface* ieqs) : Mob(
 	dead = false;
 	is_client_moving = false;
 	SetDevToolsEnabled(true);
-	eqs = ieqs;
-	ip = eqs->GetRemoteIP();
-	port = ntohs(eqs->GetRemotePort());
+	uint8 remote_address[4] = {};
+	ip = 0;
+	port = 0;
+	if (m_stream == nullptr || m_stream->GetRemoteAddress(remote_address, port) != RDPLIB_OK)
+	{
+		LogError("Client was created without a usable RDP stream");
+	}
+	else
+	{
+		memcpy(&ip, remote_address, sizeof(ip));
+	}
 	client_state = CLIENT_CONNECTING;
 	Trader=false;
 	WithCustomer = false;
@@ -205,11 +217,8 @@ Client::Client(EQStreamInterface* ieqs) : Mob(
 	auto_fire = false;
 	runmode = true;
 	linkdead_timer.Disable();
-	zonesummon_id = 0;
-	zonesummon_ignorerestrictions = 0;
-	zoning = false;
+	m_removal_disposition = ClientRemovalDisposition::Offline;
 	m_lock_save_position = false;
-	zone_mode = ZoneUnsolicited;
 	casting_spell_id = 0;
 	npcflag = false;
 	npclevel = 0;
@@ -222,14 +231,10 @@ Client::Client(EQStreamInterface* ieqs) : Mob(
 	autosave_timer.Disable();
 	door_check_timer.Disable();
 	mend_reset_timer.Disable();
-	zoning_timer.Disable();
-	instalog = false;
+	pending_zone_transfer_timer.Disable();
 	m_pp.autosplit = false;
 	// initialise haste variable
 	m_tradeskill_object = nullptr;
-	PendingRezzXP = -1;
-	PendingRezzDBID = 0;
-	PendingRezzSpellID = 0;
 	numclients++;
 	// emuerror;
 	UpdateWindowTitle(nullptr);
@@ -242,9 +247,6 @@ Client::Client(EQStreamInterface* ieqs) : Mob(
 	//for good measure:
 	memset(&m_pp, 0, sizeof(m_pp));
 	memset(&m_epp, 0, sizeof(m_epp));
-	PendingTranslocate = false;
-	PendingSacrifice = false;
-	sacrifice_caster_id = 0;
 	BoatID = 0;
 
 	if (!RuleB(Character, PerCharacterQglobalMaxLevel) && !RuleB(Character, PerCharacterBucketMaxLevel)) {
@@ -327,7 +329,6 @@ Client::Client(EQStreamInterface* ieqs) : Mob(
 	pet_count = 0;
 	rested = false;
 	camping = false;
-	camp_desktop = false;
 	food_hp = 0;
 	drink_hp = 0;
 	poison_spell_id = 0;
@@ -361,7 +362,6 @@ Client::Client(EQStreamInterface* ieqs) : Mob(
 }
 
 Client::~Client() {
-	SendAllPackets();
 	mMovementManager->RemoveClient(this);
 
 	Mob* horse = entity_list.GetMob(this->CastToClient()->GetHorseId());
@@ -378,10 +378,8 @@ Client::~Client() {
 		ReportConnectingState();
 	}
 
-	if(m_tradeskill_object != nullptr) {
-		m_tradeskill_object->Close();
-		m_tradeskill_object = nullptr;
-	}
+	CloseTradeskillObject();
+	CloseTraderSession();
 
 	if(IsDueling() && GetDuelTarget() != 0) {
 		Entity* entity = entity_list.GetID(GetDuelTarget());
@@ -396,17 +394,15 @@ Client::~Client() {
 		GetTarget()->IsTargeted(-1);
 	}
 
-	//if we are in a group and we are not zoning, force leave the group
-	if (isgrouped && !zoning && is_zone_loaded) {
+	// If normal removal did not run, only clean up a group which still has this local Client.
+	if (GetGroup() && m_removal_disposition != ClientRemovalDisposition::ZoneTransfer && is_zone_loaded) {
 		LeaveGroup();
 	}
 
 	Raid *myraid = entity_list.GetRaidByClient(this);
-	if (myraid && !zoning && is_zone_loaded) {
+	if (myraid && m_removal_disposition != ClientRemovalDisposition::ZoneTransfer && is_zone_loaded) {
 		myraid->DisbandRaidMember(GetName());
 	}
-
-	UpdateWho(2);
 
 	// we save right now, because the client might be zoning and the world
 	// will need this data right away
@@ -424,10 +420,6 @@ Client::~Client() {
 		zone->RemoveAuth(GetName(), lskey);
 	}
 
-	//let the stream factory know were done with this stream
-	eqs->Close();
-	eqs->ReleaseFromUse();
-
 	UninitializeBuffSlots();
 
 	if (zoneentry != nullptr) {
@@ -443,13 +435,20 @@ Client::~Client() {
 	corpse_summon_timers.clear();
 }
 
-void Client::SendLogoutPackets() {
-
+void Client::SendLogoutPackets()
+{
 	auto outapp = new EQApplicationPacket(OP_CancelTrade, sizeof(CancelTrade_Struct));
-	CancelTrade_Struct* ct = (CancelTrade_Struct*) outapp->pBuffer;
-	ct->fromid = GetID();
-	ct->action = groupActUpdate;
+	auto cancel = reinterpret_cast<CancelTrade_Struct *>(outapp->pBuffer);
+	cancel->fromid = GetID();
+	cancel->action = groupActUpdate;
 	FastQueuePacket(&outapp);
+}
+
+void Client::SendLogoutReply()
+{
+	// this packet really did get sent by the AK server but the client ignores it
+	auto reply = new EQApplicationPacket(OP_LogoutReply);
+	FastQueuePacket(&reply);
 }
 
 void Client::SendCancelTrade(Mob* with) {
@@ -817,6 +816,131 @@ CLIENTPACKET::~CLIENTPACKET()
 	safe_delete(app);
 }
 
+void Client::SendToStream(EQApplicationPacket **packet, bool reliable)
+{
+	if (packet == nullptr || *packet == nullptr)
+		return;
+
+	EmuOpcode opcode = (*packet)->GetOpcode();
+	if (m_stream == nullptr)
+	{
+		delete *packet;
+		*packet = nullptr;
+		return;
+	}
+
+	int result = m_stream->Send(packet, reliable);
+	if (result != RDPLIB_OK)
+	{
+		LogNetcode("Unable to send opcode [{}], RDP result [{}]", OpcodeManager::EmuToName(opcode), result);
+	}
+}
+
+void Client::CloseTradeskillObject()
+{
+	if (m_tradeskill_object == nullptr)
+		return;
+
+	m_tradeskill_object->Close();
+	m_tradeskill_object = nullptr;
+}
+
+void Client::CloseTraderSession()
+{
+	uint32 trader_id = TraderSession;
+	if (trader_id == 0)
+		return;
+
+	TraderSession = 0;
+
+	Client *trader = entity_list.GetClientByID(trader_id);
+	if (trader && !entity_list.TraderHasCustomer(trader))
+		trader->WithCustomer = false;
+}
+
+void Client::FlushPositionUpdates()
+{
+	if (m_stream == nullptr)
+		return;
+
+	int result = m_stream->FlushPositionUpdates();
+	if (result != RDPLIB_OK)
+		LogNetcode("Unable to flush position updates, RDP result [{}]", result);
+}
+
+void Client::CloseStream()
+{
+	CloseStream(RDPStream::DefaultLingerTimeout);
+}
+
+void Client::CloseStream(uint32 linger_timeout_ms)
+{
+	if (m_stream == nullptr)
+		return;
+
+	m_stream->Close(linger_timeout_ms);
+	m_stream.reset();
+	m_packet_loss.reset();
+}
+
+void Client::Disconnect()
+{
+	m_removal_disposition = ClientRemovalDisposition::Offline;
+	client_state = DISCONNECTED;
+}
+
+void Client::DisconnectForZoneTransfer()
+{
+	m_removal_disposition = ClientRemovalDisposition::ZoneTransfer;
+	client_state = DISCONNECTED;
+}
+
+void Client::Logout()
+{
+	if (client_state != CLIENT_CONNECTED)
+		return;
+
+	SendLogoutReply();
+
+	m_removal_disposition = ClientRemovalDisposition::ReturnToWorld;
+	client_state = DISCONNECTED;
+}
+
+bool Client::GetNetworkStatistics(rdplib_connection_perf_stats_t &statistics) const
+{
+	return m_stream != nullptr && m_stream->GetStatistics(statistics) == RDPLIB_OK;
+}
+
+int Client::SimulatePacketLoss(const RDPPacketLoss::Options &options)
+{
+	if (m_stream == nullptr)
+		return RDPLIB_ERROR_NOT_USABLE;
+
+	if (options.percentage <= 0.0)
+	{
+		int result = m_stream->SetPacketDropCallback(nullptr);
+		if (result == RDPLIB_OK)
+			m_packet_loss.reset();
+		return result;
+	}
+
+	auto packet_loss = std::make_unique<RDPPacketLoss>(options);
+	int result = m_stream->SetPacketDropCallback(RDPPacketLoss::ShouldDropPacket, packet_loss.get());
+	if (result == RDPLIB_OK)
+		m_packet_loss = std::move(packet_loss);
+	return result;
+}
+
+bool Client::GetSimulatedPacketLossOptions(RDPPacketLoss::Options *options) const
+{
+	if (m_packet_loss == nullptr)
+		return false;
+
+	if (options != nullptr)
+		*options = m_packet_loss->GetOptions();
+	return true;
+}
+
 //this assumes we do not own pApp, and clones it.
 bool Client::AddPacket(const EQApplicationPacket *pApp, bool bAckreq) {
 	if (!pApp)
@@ -858,33 +982,32 @@ bool Client::AddPacket(EQApplicationPacket** pApp, bool bAckreq) {
 }
 
 bool Client::SendAllPackets() {
-	CLIENTPACKET *cp = nullptr;
+	if (clientpackets.empty())
+		return false;
+
 	while (!clientpackets.empty()) {
-		cp = clientpackets.front().get();
-		if (eqs)
-			eqs->FastQueuePacket((EQApplicationPacket **)&cp->app, cp->ack_req);
+		CLIENTPACKET *cp = clientpackets.front().get();
+		SendToStream(&cp->app, cp->ack_req);
 		clientpackets.pop_front();
+		LogPacketServerClientDetail("Transmitting a packet");
 	}
 	return true;
 }
 
 void Client::QueuePacket(const EQApplicationPacket* app, bool ack_req, CLIENT_CONN_STATUS required_state, eqFilterType filter) {
+	if (app == nullptr) {
+		return;
+	}
+
 	if(filter != FilterNone && GetFilter(filter) == FilterHide){
 		return;
 	}
 
-	if (client_state == PREDISCONNECTED) {
+	if (client_state == CLIENT_LINKDEAD || client_state == CLIENT_KICKED || client_state == DISCONNECTED) {
 		return;
 	}
 
 	if(client_state != CLIENT_CONNECTED && required_state == CLIENT_CONNECTED){
-		AddPacket(app, ack_req);
-		return;
-	}
-
-	//Wait for the queue to catch up - THEN send the first available predisconnected (zonechange) packet!
-	if (client_state == ZONING && required_state != ZONING)	{
-		// save packets in case this fails
 		AddPacket(app, ack_req);
 		return;
 	}
@@ -894,8 +1017,9 @@ void Client::QueuePacket(const EQApplicationPacket* app, bool ack_req, CLIENT_CO
 		// todo: save packets for later use
 		AddPacket(app, ack_req);
 	}
-	else if (eqs) {
-		eqs->QueuePacket(app, ack_req);
+	else if (m_stream != nullptr) {
+		EQApplicationPacket *copy = app->Copy();
+		SendToStream(&copy, ack_req);
 	}
 }
 
@@ -903,18 +1027,11 @@ void Client::FastQueuePacket(EQApplicationPacket** app, bool ack_req, CLIENT_CON
 	// if the program doesnt care about the status or if the status isnt what we requested
 
 
-	if(client_state == PREDISCONNECTED)	{
+	if(client_state == CLIENT_LINKDEAD || client_state == CLIENT_KICKED || client_state == DISCONNECTED)	{
 		if (app && (*app)) {
 			delete *app;
 			*app = nullptr;
 		}
-		return;
-	}
-
-		//Wait for the queue to catch up - THEN send the first available predisconnected (zonechange) packet!
-	if (client_state == ZONING && required_state != ZONING)	{
-		// save packets in case this fails
-		AddPacket(app, ack_req);
 		return;
 	}
 
@@ -924,13 +1041,7 @@ void Client::FastQueuePacket(EQApplicationPacket** app, bool ack_req, CLIENT_CON
 		return;
 	}
 	else if (app != nullptr && *app != nullptr) {
-		if (eqs) {
-			eqs->FastQueuePacket((EQApplicationPacket **)app, ack_req);
-		}
-		else if (app && (*app)) {
-			delete *app;
-		}
-		*app = nullptr;
+		SendToStream(app, ack_req);
 	}
 	return;
 }
@@ -1441,14 +1552,14 @@ void Client::AddSkill(EQ::skills::SkillType skillid, uint16 value) {
 	SetSkill(skillid, value);
 }
 
-void Client::UpdateWho(uint8 remove) {
+void Client::UpdateWho(WorldSessionStatus status) {
 	if (account_id == 0)
 		return;
 	if (!worldserver.Connected())
 		return;
 	auto pack = new ServerPacket(ServerOP_ClientList, sizeof(ServerClientList_Struct));
 	ServerClientList_Struct* scl = (ServerClientList_Struct*) pack->pBuffer;
-	scl->remove = remove;
+	scl->status = status;
 	scl->wid = this->GetWID();
 	scl->IP = this->GetIP();
 	scl->charid = this->CharacterID();
@@ -2378,6 +2489,7 @@ void Client::SetPVP(bool toggle) {
 }
 
 void Client::Kick(const std::string& reason) {
+	m_removal_disposition = ClientRemovalDisposition::Offline;
 	client_state = CLIENT_KICKED;
 
 	LogClientLogin("Client [{}] kicked, reason [{}]", GetCleanName(), reason.c_str());
@@ -3020,6 +3132,53 @@ void Client::SetLanguageSkill(int langid, int value)
 
 void Client::LinkDead()
 {
+	ClearPendingZoneTransfer();
+	CloseStream(0);
+
+	Mob *trade_partner = trade->With();
+	if (trade_partner)
+	{
+		LogTrading("Canceling trade with [{}] due to linkdead.", trade_partner->GetName());
+
+		if (trade_partner->IsClient())
+		{
+			trade_partner->CastToClient()->SendCancelTrade(this);
+		}
+		else
+		{
+			trade_partner->trade->Reset();
+		}
+
+		FinishTrade(this);
+		trade->Reset();
+	}
+
+	uint16 corpse_id = IsLooting();
+	if (corpse_id != 0)
+	{
+		Corpse *corpse = entity_list.GetCorpseByID(corpse_id);
+		if (corpse)
+		{
+			corpse->EndLoot(this, nullptr);
+		}
+
+		SetLooting(0);
+	}
+
+	CloseTradeskillObject();
+	CloseTraderSession();
+
+	if (Trader)
+	{
+		Trader_EndTrader();
+	}
+
+	uint32 linkdead_time = RuleI(Zone, ClientLinkdeadIdleMS);
+	if (entity_list.Fighting(this))
+	{
+		linkdead_time = RuleI(Zone, ClientLinkdeadMS);
+	}
+
 	if (GetGroup())
 	{
 		entity_list.MessageGroup(this,true,Chat::Yellow,"%s has gone Linkdead.",GetName());
@@ -3030,14 +3189,12 @@ void Client::LinkDead()
 		raid->DisbandRaidMember(GetName());
 	}
 //	save_timer.Start(2500);
-	linkdead_timer.Start(RuleI(Zone,ClientLinkdeadMS));
+	linkdead_timer.Start(linkdead_time);
 	SendAppearancePacket(AppearanceType::Linkdead, 1);
 	client_distance_timer.Disable();
 	client_state = CLIENT_LINKDEAD;
 	AI_Start();
 	UpdateWho();
-	if(Trader)
-		Trader_EndTrader();
 }
 
 void Client::Escape()
@@ -3153,7 +3310,7 @@ void Client::SacrificeConfirm(Mob *caster) {
 	auto outapp = new EQApplicationPacket(OP_Sacrifice, sizeof(Sacrifice_Struct));
 	Sacrifice_Struct *ss = (Sacrifice_Struct*)outapp->pBuffer;
 
-	if (!caster || PendingSacrifice)
+	if (!caster || IsSacrificePending() || IsZoningOut())
 	{
 		safe_delete(outapp);
 		return;
@@ -3180,13 +3337,15 @@ void Client::SacrificeConfirm(Mob *caster) {
 	safe_delete(outapp);
 	// We store the Caster's id, because when the packet comes back, it only has the victim's entityID in it,
 	// not the caster.
-	sacrifice_caster_id = caster->GetID();
-	PendingSacrifice = true;
+	SetPendingSacrifice(caster->GetID(), caster->GetName());
 }
 
 //Essentially a special case death function
 void Client::Sacrifice(Mob *caster)
 {
+	if (IsZoningOut())
+		return;
+
 	if(GetLevel() >= RuleI(Spells, SacrificeMinLevel) && GetLevel() <= RuleI(Spells, SacrificeMaxLevel)){
 		
 		float loss;
@@ -3215,10 +3374,26 @@ void Client::Sacrifice(Mob *caster)
 			SetEXP(GetEXP()-exploss, GetAAXP());
 			SendLogoutPackets();
 
+			if (Trader)
+				Trader_EndTrader();
+
 			Mob* killer = caster ? caster : nullptr;
 			GenerateDeathPackets(killer, 0, 1768, EQ::skills::SkillAlteration, false, Killed_Sac);
 
-			BuffFadeAll();
+			if (GetPet() && GetPet()->IsCharmedPet())
+			{
+				LogDeath("[{}] has died. Fading charm on pet.", GetName());
+				GetPet()->BuffFadeByEffect(SE_Charm);
+			}
+
+			InterruptSpell();
+			SetPet(0);
+			SetHorseId(0);
+			SetHP(-500);
+			SetMana(GetMaxMana());
+			dead = true;
+			ClearTimersOnDeath();
+
 			UnmemSpellAll();
 			Group *g = GetGroup();
 			if(g){
@@ -3233,12 +3408,11 @@ void Client::Sacrifice(Mob *caster)
 				auto new_corpse = new Corpse(this, 0, Killed_Sac);
 				entity_list.AddCorpse(new_corpse, GetID());
 				SetID(0);
+				SetCorpseID(new_corpse->GetID());
 			}
 
-			SetHP(-500);
-			SetMana(GetMaxMana());
+			BuffFadeNonPersistDeath();
 
-			Save();
 			GoToDeath();
 			if (caster && caster->IsClient()) {
 				caster->CastToClient()->SummonItem(RuleI(Spells, SacrificeItemID));
@@ -3253,51 +3427,149 @@ void Client::Sacrifice(Mob *caster)
 	}
 }
 
-void Client::SendOPTranslocateConfirm(Mob *Caster, uint16 SpellID) {
-
-	if (!Caster || PendingTranslocate)
+void Client::SendOPTranslocateConfirm(Mob *Caster, uint16 SpellID)
+{
+	if (!Caster || dead || IsZoningOut() || IsTranslocatePending())
+	{
 		return;
+	}
 
 	const SPDat_Spell_Struct &Spell = spells[SpellID];
+	const bool translocate_to_bind = IsTranslocateToBindSpell(SpellID);
+	uint32 zoneid = translocate_to_bind ? m_pp.binds[0].zoneId : ZoneID(Spell.teleport_zone);
 
-	auto outapp = new EQApplicationPacket(OP_Translocate, sizeof(Translocate_Struct));
-	Translocate_Struct *ts = (Translocate_Struct*)outapp->pBuffer;
-
-	strcpy(ts->Caster, Caster->GetName());
-	PendingTranslocateData.spell_id = ts->SpellID = SpellID;
-	uint32 zoneid = ZoneID(Spell.teleport_zone);
-
-	if (!CanBeInZone(zoneid))
+	if (!translocate_to_bind && !CanBeInZone(zoneid))
 	{
-		safe_delete(outapp);
 		return;
 	}
 
-	if ((SpellID == 1422) || (SpellID == 1334) || (SpellID == 3243)) {
-		PendingTranslocateData.zone_id = ts->ZoneID = m_pp.binds[0].zoneId;
-		PendingTranslocateData.x = ts->x = m_pp.binds[0].x;
-		PendingTranslocateData.y = ts->y = m_pp.binds[0].y;
-		PendingTranslocateData.z = ts->z = m_pp.binds[0].z;
-		PendingTranslocateData.heading = m_pp.binds[0].heading;
+	glm::vec4 destination;
+	if (translocate_to_bind)
+	{
+		destination = glm::vec4(
+			m_pp.binds[0].x,
+			m_pp.binds[0].y,
+			m_pp.binds[0].z,
+			m_pp.binds[0].heading
+		);
 	}
-	else {
-		PendingTranslocateData.zone_id = ts->ZoneID = zoneid;
-		PendingTranslocateData.y = ts->y = Spell.base[0];
-		PendingTranslocateData.x = ts->x = Spell.base[1];
-		PendingTranslocateData.z = ts->z = Spell.base[2];
-		PendingTranslocateData.heading = 0.0;
+	else
+	{
+		destination = glm::vec4(Spell.base[1], Spell.base[0], Spell.base[2], Spell.base[3]);
 	}
 
-	ts->unknown008 = 0;
-	ts->Complete = 0;
+	SetPendingTranslocate(SpellID, zoneid, Caster->GetName(), destination);
+	SendPendingTranslocatePacket(false);
+}
 
-	PendingTranslocate = true;
-	TranslocateTime = time(nullptr);
+void Client::SendPendingTranslocatePacket(bool complete)
+{
+	Translocate_Struct packet = {};
+	packet.ZoneID = m_pending_translocate.zone_id;
+	packet.SpellID = m_pending_translocate.spell_id;
+	strn0cpy(packet.Caster, m_pending_translocate.caster, sizeof(packet.Caster));
+	packet.x = m_pending_translocate.destination.x;
+	packet.y = m_pending_translocate.destination.y;
+	packet.z = m_pending_translocate.destination.z;
+	packet.Complete = complete ? 1 : 0;
 
+	auto outapp = new EQApplicationPacket(
+		OP_Translocate,
+		(const unsigned char *)&packet,
+		sizeof(packet)
+	);
 	QueuePacket(outapp);
 	safe_delete(outapp);
+}
 
-	return;
+void Client::SetPendingResurrection(int experience, uint32 corpse_db_id, const Resurrect_Struct &packet)
+{
+	ClearPendingResurrection();
+	m_pending_resurrection.experience = experience;
+	m_pending_resurrection.corpse_db_id = corpse_db_id;
+	m_pending_resurrection.packet = packet;
+	m_pending_resurrection.expiration_timer.Start(PendingConfirmationTimeoutMs);
+}
+
+bool Client::IsResurrectionPending()
+{
+	if (!m_pending_resurrection.expiration_timer.Enabled())
+	{
+		return false;
+	}
+
+	if (m_pending_resurrection.expiration_timer.Check(false))
+	{
+		ClearPendingResurrection();
+		return false;
+	}
+
+	return true;
+}
+
+void Client::ClearPendingResurrection()
+{
+	m_pending_resurrection = PendingResurrection();
+}
+
+void Client::SetPendingSacrifice(uint16 caster_id, const char *caster)
+{
+	ClearPendingSacrifice();
+	m_pending_sacrifice.caster_id = caster_id;
+	strn0cpy(m_pending_sacrifice.caster, caster, sizeof(m_pending_sacrifice.caster));
+	m_pending_sacrifice.expiration_timer.Start(PendingConfirmationTimeoutMs);
+}
+
+bool Client::IsSacrificePending()
+{
+	if (!m_pending_sacrifice.expiration_timer.Enabled())
+	{
+		return false;
+	}
+
+	if (m_pending_sacrifice.expiration_timer.Check(false))
+	{
+		ClearPendingSacrifice();
+		return false;
+	}
+
+	return true;
+}
+
+void Client::ClearPendingSacrifice()
+{
+	m_pending_sacrifice = PendingSacrifice();
+}
+
+void Client::SetPendingTranslocate(uint16 spell_id, uint32 zone_id, const char *caster, const glm::vec4 &destination)
+{
+	ClearPendingTranslocate();
+	m_pending_translocate.spell_id = spell_id;
+	m_pending_translocate.zone_id = zone_id;
+	strn0cpy(m_pending_translocate.caster, caster, sizeof(m_pending_translocate.caster));
+	m_pending_translocate.destination = destination;
+	m_pending_translocate.expiration_timer.Start(PendingConfirmationTimeoutMs);
+}
+
+bool Client::IsTranslocatePending()
+{
+	if (!m_pending_translocate.expiration_timer.Enabled())
+	{
+		return false;
+	}
+
+	if (m_pending_translocate.expiration_timer.Check(false))
+	{
+		ClearPendingTranslocate();
+		return false;
+	}
+
+	return true;
+}
+
+void Client::ClearPendingTranslocate()
+{
+	m_pending_translocate = PendingTranslocate();
 }
 
 void Client::SendPickPocketResponse(Mob *from, uint32 amt, int type, int16 slotid, EQ::ItemInstance* inst, bool skipskill)
@@ -3504,7 +3776,7 @@ int Client::GetAggroCount() {
 
 void Client::SummonAndRezzAllCorpses()
 {
-	PendingRezzXP = -1;
+	ClearPendingResurrection();
 
 	auto Pack = new ServerPacket(ServerOP_DepopAllPlayersCorpses, sizeof(ServerDepopAllPlayersCorpses_Struct));
 
@@ -6014,16 +6286,6 @@ void Client::SendBerserkState(bool state)
 	safe_delete(outapp);
 }
 
-bool Client::IsLockSavePosition() const
-{
-	return m_lock_save_position;
-}
-
-void Client::SetLockSavePosition(bool lock_save_position)
-{
-	Client::m_lock_save_position = lock_save_position;
-}
-
 std::vector<int> Client::GetMemmedSpells() {
 	std::vector<int> memmed_spells;
 	for (int index = 0; index < EQ::spells::SPELL_GEM_COUNT; index++) {
@@ -6374,6 +6636,15 @@ void Client::SendReloadCommandMessages() {
 			).c_str()
 		);
 	}
+
+	auto opcodes_link = Saylink::Silent("#opcode", "#opcode");
+	Message(
+		Chat::White,
+		fmt::format(
+			"Usage: {} - Opcode reloading is not implemented",
+			opcodes_link
+		).c_str()
+	);
 
 	SendChatLineBreak();
 }

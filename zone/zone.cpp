@@ -1288,6 +1288,7 @@ void Zone::AddAuth(ServerZoneIncomingClient_Struct* szic) {
 	zca->accid = szic->accid;
 	zca->admin = szic->admin;
 	zca->charid = szic->charid;
+	zca->lsid = szic->lsid;
 	zca->tellsoff = szic->tellsoff;
 	strn0cpy(zca->charname, szic->charname, sizeof(zca->charname));
 	strn0cpy(zca->lskey, szic->lskey, sizeof(zca->lskey));

@@ -328,7 +328,7 @@ public:
 	void	QueueClientsPosUpdate(Mob* sender, const EQApplicationPacket* app, bool ignore_sender = false, bool ackreq = true);
 	void	QueueClients(Mob* sender, const EQApplicationPacket* app, bool ignore_sender = false, bool ackreq = true);
 	void	QueueWearChange(Mob* sender, const EQApplicationPacket* app, bool ignore_sender = false, uint16 slot = 0, bool force_helm_update = false);
-	void	QueueClientsStatus(Mob* sender, const EQApplicationPacket* app, bool ignore_sender = false, uint8 minstatus = 0, uint8 maxstatus = 0);
+	void	QueueClientsStatus(Mob* sender, const EQApplicationPacket* app, bool ignore_sender = false, uint8 minstatus = 0, uint8 maxstatus = 0, bool ackreq = true);
 	void	QueueClientsGuild(Mob* sender, const EQApplicationPacket* app, bool ignore_sender = false, uint32 guildeqid = 0);
 	void	QueueClientsByTarget(Mob* sender, const EQApplicationPacket* app, bool iSendToSender = true, Mob* SkipThisMob = 0, bool ackreq = true,
 						bool HoTT = true, uint32 ClientVersionBits = 0xFFFFFFFF);
@@ -350,6 +350,7 @@ public:
 	void	UpdateWho(bool iSendFullUpdate = false);
 	char*	MakeNameUnique(char* name);
 	void	SendPositionUpdates(Client* client);
+	void	FlushPositionUpdates();
 	static char* RemoveNumbers(char* name);
 	void	SignalMobsByNPCID(uint32 npc_type, int signal_id, const char* data = nullptr);
 	void	RemoveEntity(uint16 id);
