@@ -228,7 +228,6 @@ public:
 	void	ProcessProximitySay(const char *Message, Client *c, uint8 language = 0);
 	Doors *FindDoor(uint8 door_id);
 	Doors	*FindNearestDoor(Client* c);
-	void	OpenFloorTeleportNear(Client* c);
 	void	ListDoors(Client* c);
 	glm::vec3	GetDoorLoc(Client* c, int doorid);
 	Object *FindObject(uint32 object_id);

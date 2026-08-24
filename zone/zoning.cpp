@@ -284,6 +284,16 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app)
 			return;
 		}
 
+		// client side 'zone lines' are lists of DRNTP BSP regions that either encode the destination directly or reference a teleport index.
+		// the 'zone_points' table in the database combines two things: the teleport records sent in OP_Zonepoints and an eqemu server side
+		// bounding box teleport system called virtual zone points.
+		//
+		// the x/y positions on the zone_point here are server side authored validation reusing the virtual zone point fields for this.
+		// teleport coords sent to the client do not have an x/y position, they are just destination coords.  this validation relies on there
+		// being 'fake' records in zone_points for the directly encoded destinations that don't naturally reference a TP index.
+		//
+		// TODO: check the zone geometry regions, project the client's position to estimate where they touched it
+		// and resolve destination coordinates from the the effective DRNTP string.
 		zone_point = zone->GetClosestZonePoint(glm::vec3(GetPosition()), target_zone_id, this, ZONEPOINT_ZONE_RANGE);
 		if (zone_point == nullptr || zone_point->target_zone_id != target_zone_id)
 		{
@@ -708,10 +718,11 @@ void Client::MovePC(uint32 zoneID, float x, float y, float z, float heading, uin
 	if (Trader)
 		Trader_EndTrader();
 
+	const glm::vec4 committed_destination = ResolveClientTeleportDestination(zoneID, destination);
+
 	if (transfer)
 	{
 		// Store the destination after applying the changes the client will make when it receives the teleport packet.
-		const glm::vec4 committed_destination = ResolveClientTeleportDestination(zoneID, destination);
 		SetPendingZoneTransfer(zm, zoneID, committed_destination, ignorerestrictions);
 
 		// Send the original destination. The client applies the same changes before it starts zoning.
@@ -725,15 +736,16 @@ void Client::MovePC(uint32 zoneID, float x, float y, float z, float heading, uin
 			if (pet != nullptr)
 			{
 				pet->SetPetOrder(SPO_Follow);
-				pet->GMMove(destination.x + 15.0f, destination.y, destination.z);
+				pet->GMMove(committed_destination.x + 15.0f, committed_destination.y, committed_destination.z);
 			}
 		}
 
-		m_Position.x = destination.x;
-		m_Position.y = destination.y;
-		m_Position.z = destination.z;
-		m_Position.w = destination.w * 0.5f; // MovePC takes the full 512 scale heading; internal heading is 256 scale.
+		m_Position.x = committed_destination.x;
+		m_Position.y = committed_destination.y;
+		m_Position.z = committed_destination.z;
+		m_Position.w = committed_destination.w * 0.5f; // MovePC takes the full 512 scale heading; internal heading is 256 scale.
 
+		// Send the original destination so the client resolves the same sentinel values.
 		SendTeleportPacket(zoneID, destination);
 
 		// Proximity events may move the client again, so process them after sending this move.

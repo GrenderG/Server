@@ -460,12 +460,6 @@ bool Client::Process() {
 			apperance_timer.Disable();
 		}
 
-		// Right now, only veeshan has floor teleports. If more are discovered, create a method to determine which zones need the timer.
-		if (GetZoneID() == Zones::VEESHAN && !door_check_timer.Enabled())
-		{
-			door_check_timer.Start();
-		}
-
 		if (mend_reset_timer.Check())
 		{
 			ResetSkill(EQ::skills::SkillMend);

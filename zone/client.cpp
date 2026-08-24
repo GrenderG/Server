@@ -153,7 +153,6 @@ Client::Client(std::unique_ptr<RDPStream> stream) : Mob(
 	afk_toggle_timer(250),
 	helm_toggle_timer(250),
 	trade_timer(3000),
-	door_check_timer(1000),
 	mend_reset_timer(60000),
 	underwater_timer(1000),
 	pending_zone_transfer_timer(ZoneTransferRequestTimeoutMs),
@@ -229,7 +228,6 @@ Client::Client(std::unique_ptr<RDPStream> stream) : Mob(
 	dead_timer.Disable();
 	camp_timer.Disable();
 	autosave_timer.Disable();
-	door_check_timer.Disable();
 	mend_reset_timer.Disable();
 	pending_zone_transfer_timer.Disable();
 	m_pp.autosplit = false;

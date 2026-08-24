@@ -864,30 +864,6 @@ void EntityList::CheckSpawnQueue()
 	}
 }
 
-void EntityList::OpenFloorTeleportNear(Client* c)
-{
-	if (!c || door_list.empty())
-		return;
-
-	auto client_pos = c->GetPosition();
-	for (auto it = door_list.begin(); it != door_list.end(); ++it) 
-	{
-		Doors *cdoor = it->second;
-
-		if (!cdoor || !cdoor->IsMoveable() || cdoor->GetOpenType() != 57 || !cdoor->IsTeleport())
-			continue;
-
-		auto diff = c->GetPosition() - cdoor->GetPosition();
-		float curdist = diff.x * diff.x + diff.y * diff.y;
-		LogDoorsDetail("A floor teleport with id [{}] was found at [{:.2f}] away at [{:.2f}] Z.", cdoor->GetDoorDBID(), curdist, diff.z * diff.z);
-		if (diff.z * diff.z < 105 && curdist <= 600)
-		{
-			cdoor->HandleClick(c, 0, true);
-			return;
-		}
-	}
-}
-
 Doors *EntityList::FindNearestDoor(Client* c)
 {
 	if (!c || door_list.empty())
@@ -1025,13 +1001,14 @@ bool EntityList::SendZoneDoorsBulk(EQApplicationPacket* app, Client *client)
 
 	auto it = door_list.begin();
 	while (it != door_list.end()) {
-		if ((it->second->GetClientVersionMask() & mask_test) &&
-			strlen(it->second->GetDoorName()) > 3)
+		if (it->second->GetClientVersionMask() & mask_test) {
 			count++;
+			if (count == 0) return false; // more than 255 is an error
+		}
 		++it;
 	}
 
-	if (count == 0 || count > 255) //doorid is uint8
+	if (count == 0) //doorid is uint8
 		return false;
 
 	Doors *door;
@@ -1041,8 +1018,7 @@ bool EntityList::SendZoneDoorsBulk(EQApplicationPacket* app, Client *client)
 	it = door_list.begin();
 	while (it != door_list.end()) {
 		door = it->second;
-		if (door && (door->GetClientVersionMask() & mask_test) &&
-				strlen(door->GetDoorName()) > 3) {
+		if (door && (door->GetClientVersionMask() & mask_test)) {
 			memcpy(nd->name, door->GetDoorName(), 16);
 			auto position = door->GetPosition();
 			nd->xPos = position.x;
@@ -1063,15 +1039,21 @@ bool EntityList::SendZoneDoorsBulk(EQApplicationPacket* app, Client *client)
 		++it;
 	}
 
-	int32 deflength = sizeof(Door_Struct) * count;
 	int buffer = 2; //Length of count that preceeds the packet.
-
 	app->SetOpcode(OP_SpawnDoor);
 	uint32 deflatedSize = EstimateDeflateBuffer(length);
-	app->pBuffer = new uchar[deflatedSize];
-	app->size = buffer + DeflatePacket(packet, length, app->pBuffer + buffer, deflatedSize);
+	if (!deflatedSize)
+		return false;
+	app->pBuffer = new uchar[deflatedSize + buffer];
+	int compressed_size = DeflatePacket(packet, length, app->pBuffer + buffer, deflatedSize);
+	if (!compressed_size)
+	{
+		safe_delete_array(app->pBuffer);
+		app->size = 0;
+		return false;
+	}
+	app->size = buffer + compressed_size;
 	DoorSpawns_Struct* ds = (DoorSpawns_Struct*)app->pBuffer;
-
 	ds->count = count;
 
 	return true;
@@ -2371,8 +2353,12 @@ void EntityList::RespawnAllDoors()
 	while (it != client_list.end()) {
 		if (it->second) {
 			auto outapp = new EQApplicationPacket();
-			SendZoneDoorsBulk(outapp, it->second);
-			it->second->FastQueuePacket(&outapp);
+			if (SendZoneDoorsBulk(outapp, it->second)) {
+				it->second->FastQueuePacket(&outapp);
+			}
+			else {
+				safe_delete(outapp);
+			}
 		}
 		++it;
 	}

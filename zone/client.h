@@ -1291,7 +1291,6 @@ private:
 	Timer afk_toggle_timer;
 	Timer helm_toggle_timer;
 	Timer trade_timer;
-	Timer door_check_timer;
 	Timer mend_reset_timer;
 
 	Timer disc_ability_timer;

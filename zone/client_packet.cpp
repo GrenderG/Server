@@ -2710,9 +2710,14 @@ void Client::Handle_OP_ClickDoor(const EQApplicationPacket *app)
 	std::string  export_string = fmt::format("{}", cd->doorid);
 	std::vector<std::any> args;
 	args.push_back(currentdoor);
-	parse->EventPlayer(EVENT_CLICK_DOOR, this, export_string, 0, &args);
+	if (parse->EventPlayer(EVENT_CLICK_DOOR, this, export_string, 0, &args) != 0)
+	{
+		// returning nonzero from lua event_click_door() means the script owns/handles the door entirely.
+		// returning nil/zero continues normal door processing.
+		return;
+	}
 
-	if (!currentdoor->IsMoveable() || (currentdoor->IsTeleport() && currentdoor->GetOpenType() == 57))
+	if (!currentdoor->IsMoveable())
 	{
 		LogDoors("[{}] clicked a door that does not open. Returning.", GetName());
 	}
@@ -2967,11 +2972,6 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 		}
 		*/
 		rewind_timer.Start(30000, true);
-	}
-
-	if (door_check_timer.Check())
-	{
-		entity_list.OpenFloorTeleportNear(this);
 	}
 
 	CheckClientToNpcAggroTimer();
