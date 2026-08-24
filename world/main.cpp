@@ -84,7 +84,6 @@
 #include "../common/path_manager.h"
 #include "../common/events/player_event_logs.h"
 #include "../common/skill_caps.h"
-#include "../common/ip_util.h"
 
 #include <memory>
 #include <new>
@@ -171,11 +170,6 @@ int main(int argc, char** argv) {
 	launcher_list.LoadList();
 	ZSList::Instance()->Init();
 
-	if (IpUtil::IsPortInUse(Config->WorldIP, Config->WorldTCPPort)) {
-		LogError("World port [{}] already in use", Config->WorldTCPPort);
-		return 1;
-	}
-
 	std::unique_ptr<EQ::Net::ConsoleServer> console;
 	if (Config->TelnetEnabled) {
 		LogInfo("Console (TCP) listener started on [{}:{}]", Config->TelnetIP, Config->TelnetTCPPort);
@@ -192,7 +186,16 @@ int main(int argc, char** argv) {
 	server_opts.port        = Config->WorldTCPPort;
 	server_opts.ipv6        = false;
 	server_opts.credentials = Config->SharedKey;
-	server_connection->Listen(server_opts);
+	int server_listen_result = server_connection->Listen(server_opts);
+	if (server_listen_result != 0) {
+		LogError(
+			"Failed to start Server (TCP) listener on port [{}]: [{}] ({})",
+			Config->WorldTCPPort,
+			uv_err_name(server_listen_result),
+			uv_strerror(server_listen_result)
+		);
+		return 1;
+	}
 	LogInfo("Server (TCP) listener started on port [{}]", Config->WorldTCPPort);
 		
 	server_connection->OnConnectionIdentified(
