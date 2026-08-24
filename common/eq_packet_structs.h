@@ -23,6 +23,7 @@
 #include <string>
 #include <list>
 #include <time.h>
+#include <algorithm>
 #include "../common/version.h"
 #include "textures.h"
 
@@ -1159,10 +1160,21 @@ struct Consider_Struct
 			  return vz * 0.0625f;
 		  }
 
-		  // X and Y are reversed in this function to match the above
 		  uint32 SetValue(float vx, float vy, float vz)
 		  {
-			  value = ((int)(float)(vx * 16.0f) << 22) | (((int)(float)(vz * 16.0f) & 0x7FF) << 11) | ((int)(float)(vy * 16.0f) & 0x7FF);
+			  vx = std::clamp(vx, -32.0f, 31.0f);
+			  vy = std::clamp(vy, -64.0f, 63.0f);
+			  vz = std::clamp(vz, -64.0f, 63.0f);
+
+			  int32 x = static_cast<int32>(vx * 16.0f);
+			  int32 y = static_cast<int32>(vy * 16.0f);
+			  int32 z = static_cast<int32>(vz * 16.0f);
+
+			  uint32 x_bits = static_cast<uint32>(x) & 0x3FFu;
+			  uint32 y_bits = static_cast<uint32>(y) & 0x7FFu;
+			  uint32 z_bits = static_cast<uint32>(z) & 0x7FFu;
+
+			  value = (x_bits << 22) | (z_bits << 11) | y_bits;
 
 			  return value;
 		  }

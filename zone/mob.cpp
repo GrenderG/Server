@@ -3298,28 +3298,29 @@ bool Mob::DoKnockback(Mob *caster, float pushback, float pushup, bool send_packe
 
 	// this should not be sent if the client is being tossed from a spell OP_Action already but is useful for gfluxed NPCs and #push
 	// NPCs will need to move or send another position update or they look like they keep falling from sky after a fling like this
+	float heading = caster->GetHeading() / 128.0f * glm::pi<float>();
+	float dx = sinf(heading) * pushback;
+	float dy = cosf(heading) * pushback;
+	float dz = pushup;
+
 	if (send_packet)
 	{
 		auto app = new EQApplicationPacket(OP_MobUpdate, sizeof(SpawnPositionUpdates_Struct));
 		SpawnPositionUpdates_Struct *spu = (SpawnPositionUpdates_Struct *)app->pBuffer;
 		spu->num_updates = 1;
 		MakeSpawnUpdate(&spu->spawn_update);
-		float heading = caster->GetHeading() / 128.0f * glm::pi<float>();
-		float dx = sinf(heading) * std::min(std::max(pushback, -32.0f), 32.0f);
-		float dy = cosf(heading) * std::min(std::max(pushback, -32.0f), 32.0f);
-		// the limit for this is -64 to 63.  a negative Z delta around -10 to -15 can kill the client for 20k falling damage
-		float dz = std::min(std::max(pushup, -64.0f), 63.0f);
-		//Message(MT_Broadcasts, "dx %0.2f dy %0.2f dz %0.2f", dx, dy, dz);
 		spu->spawn_update.delta_yzx.SetValue(dx, dy, dz);
+		dx = spu->spawn_update.delta_yzx.GetX();
+		dy = spu->spawn_update.delta_yzx.GetY();
+		dz = spu->spawn_update.delta_yzx.GetZ();
 		entity_list.QueueCloseClients(this, app, false, 350, nullptr, false, FilterPCSpells);
 		safe_delete(app);
 	}
 
-	glm::vec3 newloc(GetX(), GetY(), GetZ() + pushup);
+	glm::vec3 newloc(GetX() + dx, GetY() + dy, GetZ() + dz);
 	float newz = GetZ();
 
-	GetPushHeadingMod(caster, pushback, newloc.x, newloc.y);
-	if (pushup == 0 && zone->zonemap)
+	if (dz == 0.0f && zone->zonemap)
 	{
 		newz = zone->zonemap->FindBestZ(newloc, nullptr);
 		if (newz != BEST_Z_INVALID)
