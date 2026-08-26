@@ -360,6 +360,9 @@ Client::Client(std::unique_ptr<RDPStream> stream) : Mob(
 }
 
 Client::~Client() {
+	// Normal removal closes the stream earlier. This covers zone teardown and other direct destruction.
+	CloseStream(RDPConnectionDisposition::ZoneShutdown, 0);
+
 	mMovementManager->RemoveClient(this);
 
 	Mob* horse = entity_list.GetMob(this->CastToClient()->GetHorseId());
@@ -834,6 +837,16 @@ void Client::SendToStream(EQApplicationPacket **packet, bool reliable)
 	}
 }
 
+void Client::FlushPositionUpdates()
+{
+	if (m_stream == nullptr)
+		return;
+
+	int result = m_stream->FlushPositionUpdates();
+	if (result != RDPLIB_OK)
+		LogNetcode("Unable to flush position updates, RDP result [{}]", result);
+}
+
 void Client::CloseTradeskillObject()
 {
 	if (m_tradeskill_object == nullptr)
@@ -856,26 +869,215 @@ void Client::CloseTraderSession()
 		trader->WithCustomer = false;
 }
 
-void Client::FlushPositionUpdates()
+namespace
+{
+std::string FormatRDPByteCount(uint64 bytes)
+{
+	if (bytes < 1024)
+		return fmt::format("{} B", Strings::Commify(bytes));
+	if (bytes < 1024ull * 1024)
+		return fmt::format("{:.1f} KiB", static_cast<double>(bytes) / 1024.0);
+	if (bytes < 1024ull * 1024 * 1024)
+		return fmt::format("{:.1f} MiB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+	return fmt::format("{:.1f} GiB", static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+}
+
+std::string FormatRDPDuration(uint64 duration_ms)
+{
+	uint64 total_seconds = duration_ms / 1000;
+	uint64 hours = total_seconds / 3600;
+	uint64 minutes = (total_seconds / 60) % 60;
+	uint64 seconds = total_seconds % 60;
+	return fmt::format("{:02}:{:02}:{:02}", hours, minutes, seconds);
+}
+
+std::string FormatRDPEndpoint(const uint8 address[4], uint16 port)
+{
+	return fmt::format(
+		"{}.{}.{}.{}:{}",
+		static_cast<uint32>(address[0]),
+		static_cast<uint32>(address[1]),
+		static_cast<uint32>(address[2]),
+		static_cast<uint32>(address[3]),
+		port
+	);
+}
+
+std::string FormatRDPTransport(const RDPStream::ConnectionSnapshot &snapshot)
+{
+	if (snapshot.terminal_result == RDPConnection::PeerClosed)
+		return "PeerFIN";
+	if (snapshot.terminal_result != RDPConnection::ConnectionLost)
+		return "ServerCloseRequested";
+
+	const char *reason_name = "Unknown";
+	switch (snapshot.disconnect_reason)
+	{
+	case RDPLIB_DISCONNECT_REASON_PEER_RESET:
+		reason_name = "PeerReset";
+		break;
+	case RDPLIB_DISCONNECT_REASON_ICMP:
+		reason_name = "ICMP";
+		break;
+	case RDPLIB_DISCONNECT_REASON_UNACKNOWLEDGED_MESSAGE:
+		reason_name = "UnacknowledgedMessage";
+		break;
+	case RDPLIB_DISCONNECT_REASON_CONNECTION_INACTIVITY:
+		reason_name = "ConnectionInactivity";
+		break;
+	case RDPLIB_DISCONNECT_REASON_PROTOCOL_ERROR:
+		reason_name = "ProtocolError";
+		break;
+	case RDPLIB_DISCONNECT_REASON_SEND_ERROR:
+		reason_name = "SendError";
+		break;
+	}
+
+	return fmt::format("{}({:#010x})", reason_name, snapshot.disconnect_reason);
+}
+
+void AddRDPDiscardCause(std::string &causes, uint64 &total, const char *name, uint32 count)
+{
+	if (count == 0)
+		return;
+
+	total += count;
+	if (!causes.empty())
+		causes += ", ";
+	causes += fmt::format("{}={}", name, Strings::Commify(count));
+}
+
+std::string FormatRDPDiscards(const rdplib_connection_counters_t &counters)
+{
+	uint64 total = 0;
+	std::string causes;
+	AddRDPDiscardCause(causes, total, "bad_options", counters.discarded_bad_options);
+	AddRDPDiscardCause(causes, total, "old_seqnum", counters.discarded_old_seqnum);
+	AddRDPDiscardCause(causes, total, "dup_seqnum", counters.discarded_dup_seqnum);
+	AddRDPDiscardCause(causes, total, "old_msgid", counters.discarded_old_msgid);
+	AddRDPDiscardCause(causes, total, "bad_fragment", counters.discarded_bad_fragment);
+	AddRDPDiscardCause(causes, total, "bad_stream", counters.discarded_bad_stream);
+	AddRDPDiscardCause(causes, total, "too_short", counters.discarded_too_short);
+	AddRDPDiscardCause(causes, total, "bad_fragment_size", counters.discarded_bad_fragment_size);
+	AddRDPDiscardCause(causes, total, "bad_ack_header", counters.discarded_bad_ack_header);
+	AddRDPDiscardCause(causes, total, "bad_ackmask", counters.discarded_bad_ackmask);
+	AddRDPDiscardCause(causes, total, "mask_without_ack", counters.discarded_mask_wo_ack);
+	AddRDPDiscardCause(causes, total, "old_ack", counters.discarded_old_ack);
+	AddRDPDiscardCause(causes, total, "unsent_ack", counters.acks_for_unsent_messages);
+
+	return causes.empty()
+		? "0"
+		: fmt::format("{}: {}", Strings::Commify(total), causes);
+}
+
+std::string FormatRDPRTT(
+	const rdplib_connection_counters_t &counters,
+	const rdplib_connection_perf_stats_t &performance
+)
+{
+	if (counters.packets_updated_rtt == 0)
+		return "n/a";
+
+	return fmt::format(
+		"{} +/- {} ms, samples {}/{}",
+		Strings::Commify(performance.rtt_mean_ms),
+		Strings::Commify(performance.rtt_deviation_ms),
+		Strings::Commify(counters.packets_updated_rtt),
+		Strings::Commify(counters.packets_updated_rtt_attempts)
+	);
+}
+}
+
+void Client::LogRDPConnectionSummary(RDPConnectionDisposition disposition) const
 {
 	if (m_stream == nullptr)
 		return;
 
-	int result = m_stream->FlushPositionUpdates();
+	const char *disposition_name = "offline";
+	switch (disposition)
+	{
+	case RDPConnectionDisposition::Camp:
+		disposition_name = "camp";
+		break;
+	case RDPConnectionDisposition::ZoneTransfer:
+		disposition_name = "zone_transfer";
+		break;
+	case RDPConnectionDisposition::Kick:
+		disposition_name = "kick";
+		break;
+	case RDPConnectionDisposition::Linkdead:
+		disposition_name = "linkdead";
+		break;
+	case RDPConnectionDisposition::ZoneShutdown:
+		disposition_name = "zone_shutdown";
+		break;
+	case RDPConnectionDisposition::Offline:
+		break;
+	}
+
+	RDPStream::ConnectionSnapshot snapshot;
+	int result = m_stream->GetConnectionSnapshot(snapshot);
 	if (result != RDPLIB_OK)
-		LogNetcode("Unable to flush position updates, RDP result [{}]", result);
+	{
+		LogInfo(
+			"RDP connection finished: character=[{}:{}] peer=[unknown] duration=[unknown] "
+			"transport=[Unknown] disposition=[{}] statistics=[unavailable, result={}]",
+			GetName(),
+			CharacterID(),
+			disposition_name,
+			result
+		);
+		return;
+	}
+
+	const rdplib_connection_counters_t &counters = snapshot.counters;
+	const rdplib_connection_perf_stats_t &performance = snapshot.performance;
+	uint64 tx_bytes = static_cast<uint64>(counters.unreliable_bytes_tx) + counters.reliable_bytes_tx;
+	uint64 tx_packets = static_cast<uint64>(counters.unreliable_packets_tx) + counters.reliable_packets_tx;
+	uint64 rx_bytes = static_cast<uint64>(counters.unreliable_bytes_rx) + counters.reliable_bytes_rx;
+	uint64 rx_packets = static_cast<uint64>(counters.unreliable_packets_rx) + counters.reliable_packets_rx;
+
+	LogInfo(
+		"RDP connection finished: character=[{}:{}] peer=[{}] duration=[{}] "
+		"transport=[{}] disposition=[{}] tx=[{} / {} packets] "
+		"retransmitted=[{} / {} packets] rx_unique=[{} / {} packets] "
+		"duplicate=[{} / {} packets] out_of_sequence=[{} / {} packets] "
+		"discarded=[{}] rtt=[{}] send_queue=[{}, stall {} ms]",
+		GetName(),
+		CharacterID(),
+		FormatRDPEndpoint(snapshot.remote_address, snapshot.remote_port),
+		FormatRDPDuration(snapshot.duration_ms),
+		FormatRDPTransport(snapshot),
+		disposition_name,
+		FormatRDPByteCount(tx_bytes),
+		Strings::Commify(tx_packets),
+		FormatRDPByteCount(counters.reliable_bytes_retransmitted),
+		Strings::Commify(counters.reliable_packets_retransmitted),
+		FormatRDPByteCount(rx_bytes),
+		Strings::Commify(rx_packets),
+		FormatRDPByteCount(counters.duplicate_reliable_bytes_rx),
+		Strings::Commify(counters.duplicate_reliable_packets_rx),
+		FormatRDPByteCount(counters.bytes_rx_out_of_sequence),
+		Strings::Commify(counters.packets_rx_out_of_sequence),
+		FormatRDPDiscards(counters),
+		FormatRDPRTT(counters, performance),
+		FormatRDPByteCount(performance.queued_reliable_bytes),
+		Strings::Commify(performance.transmit_stall_time_ms)
+	);
 }
 
-void Client::CloseStream()
+void Client::CloseStream(RDPConnectionDisposition disposition)
 {
-	CloseStream(RDPStream::DefaultLingerTimeout);
+	CloseStream(disposition, RDPStream::DefaultLingerTimeout);
 }
 
-void Client::CloseStream(uint32 linger_timeout_ms)
+void Client::CloseStream(RDPConnectionDisposition disposition, uint32 linger_timeout_ms)
 {
 	if (m_stream == nullptr)
 		return;
 
+	// The rdplib handle and its close-time counters are still readable here.
+	LogRDPConnectionSummary(disposition);
 	m_stream->Close(linger_timeout_ms);
 	m_stream.reset();
 	m_packet_loss.reset();
@@ -3131,7 +3333,7 @@ void Client::SetLanguageSkill(int langid, int value)
 void Client::LinkDead()
 {
 	ClearPendingZoneTransfer();
-	CloseStream(0);
+	CloseStream(RDPConnectionDisposition::Linkdead, 0);
 
 	Mob *trade_partner = trade->With();
 	if (trade_partner)

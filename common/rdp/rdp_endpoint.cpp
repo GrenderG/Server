@@ -64,8 +64,6 @@ int RDPEndpoint::Open(RDPRuntime &runtime, uint16 local_port, uint32 expected_co
 	}
 	if (receive_socket_buffer_bytes < ServerSocketBufferSize)
 		LogWarning("RDP receive socket buffer requested [{}] bytes, but the operating system reported [{}] bytes. If running on Linux, check net.core.rmem_max and net.core.wmem_max", ServerSocketBufferSize, receive_socket_buffer_bytes);
-	else
-		LogInfo("RDP receive socket buffer requested [{}] bytes, operating system reported [{}] bytes", ServerSocketBufferSize, receive_socket_buffer_bytes);
 
 	// send buffer, SO_SNDBUF
 	uint32 send_socket_buffer_bytes;
@@ -77,8 +75,6 @@ int RDPEndpoint::Open(RDPRuntime &runtime, uint16 local_port, uint32 expected_co
 	}
 	if (send_socket_buffer_bytes < ServerSocketBufferSize)
 		LogWarning("RDP send socket buffer requested [{}] bytes, but the operating system reported [{}] bytes. If running on Linux, check net.core.rmem_max and net.core.wmem_max", ServerSocketBufferSize, send_socket_buffer_bytes);
-	else
-		LogInfo("RDP send socket buffer requested [{}] bytes, operating system reported [{}] bytes", ServerSocketBufferSize, send_socket_buffer_bytes);
 
 	return RDPLIB_OK;
 }

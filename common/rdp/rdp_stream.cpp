@@ -219,6 +219,11 @@ int RDPStream::GetStatistics(rdplib_connection_perf_stats_t &statistics) const
 	return m_connection != nullptr ? m_connection->GetStatistics(statistics) : RDPLIB_ERROR_NOT_USABLE;
 }
 
+int RDPStream::GetConnectionSnapshot(ConnectionSnapshot &snapshot) const
+{
+	return m_connection != nullptr ? m_connection->GetSnapshot(snapshot) : RDPLIB_ERROR_NOT_USABLE;
+}
+
 int RDPStream::SetPacketDropCallback(rdplib_packet_drop_callback_t callback, void *context)
 {
 	return m_connection != nullptr ? m_connection->SetPacketDropCallback(callback, context) : RDPLIB_ERROR_NOT_USABLE;

@@ -5,6 +5,8 @@
 
 #include "rdplib.h"
 
+#include <chrono>
+
 class RDPEndpoint;
 
 // Owns one message returned by rdplib.  Its data remains valid until this object is destroyed or reused.
@@ -44,6 +46,19 @@ public:
 		ConnectionLost
 	};
 
+	struct Snapshot
+	{
+		uint8 remote_address[4] = {};
+		uint16 remote_port = 0;
+		// Application-observed lifetime beginning when the rdplib handle was wrapped.
+		uint64 duration_ms = 0;
+		ReceiveResult terminal_result = NoData;
+		uint32 disconnect_reason = 0;
+		rdplib_disconnect_info_t disconnect_info = {};
+		rdplib_connection_counters_t counters = {};
+		rdplib_connection_perf_stats_t performance = {};
+	};
+
 	~RDPConnection();
 
 	RDPConnection(const RDPConnection &) = delete;
@@ -64,7 +79,11 @@ public:
 	void Close(uint32 linger_timeout_ms);
 
 	int GetRemoteAddress(uint8 address[4], uint16 &port) const;
+	int GetCounters(rdplib_connection_counters_t &counters) const;
 	int GetStatistics(rdplib_connection_perf_stats_t &statistics) const;
+	int GetDisconnectInfo(rdplib_disconnect_info_t &information) const;
+	// The individual rdplib records are captured sequentially while the connection is still usable.
+	int GetSnapshot(Snapshot &snapshot) const;
 	int SetPacketDropCallback(rdplib_packet_drop_callback_t callback, void *context = nullptr);
 
 private:
@@ -76,6 +95,7 @@ private:
 	rdplib_connection_t *m_connection;
 	ReceiveResult m_terminal_result;
 	uint32 m_disconnect_reason;
+	std::chrono::steady_clock::time_point m_started_at;
 };
 
 #endif

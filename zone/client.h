@@ -1228,8 +1228,18 @@ private:
 	void SendToStream(EQApplicationPacket **packet, bool reliable);
 	void CloseTradeskillObject();
 	void CloseTraderSession();
-	void CloseStream();
-	void CloseStream(uint32 linger_timeout_ms);
+	enum class RDPConnectionDisposition
+	{
+		Offline,
+		Camp,
+		ZoneTransfer,
+		Kick,
+		Linkdead,
+		ZoneShutdown
+	};
+	void LogRDPConnectionSummary(RDPConnectionDisposition disposition) const;
+	void CloseStream(RDPConnectionDisposition disposition);
+	void CloseStream(RDPConnectionDisposition disposition, uint32 linger_timeout_ms);
 	// An approved zone transfer preserves the world session while the source zone removes the client.
 	void DisconnectForZoneTransfer();
 	bool FinishRequestedRemoval();

@@ -41,7 +41,8 @@ void RDPMessage::Reset(rdplib_message_t *message)
 RDPConnection::RDPConnection(rdplib_connection_t *connection)
 	: m_connection(connection),
 	  m_terminal_result(NoData),
-	  m_disconnect_reason(0)
+	  m_disconnect_reason(0),
+	  m_started_at(std::chrono::steady_clock::now())
 {
 }
 
@@ -172,9 +173,59 @@ int RDPConnection::GetRemoteAddress(uint8 address[4], uint16 &port) const
 	return m_connection != nullptr ? rdplib_connection_get_remote_ipv4(m_connection, address, &port) : RDPLIB_ERROR_NOT_USABLE;
 }
 
+int RDPConnection::GetCounters(rdplib_connection_counters_t &counters) const
+{
+	return m_connection != nullptr ? rdplib_connection_get_counters(m_connection, &counters) : RDPLIB_ERROR_NOT_USABLE;
+}
+
 int RDPConnection::GetStatistics(rdplib_connection_perf_stats_t &statistics) const
 {
 	return m_connection != nullptr ? rdplib_connection_get_perf_stats(m_connection, &statistics) : RDPLIB_ERROR_NOT_USABLE;
+}
+
+int RDPConnection::GetDisconnectInfo(rdplib_disconnect_info_t &information) const
+{
+	return m_connection != nullptr ? rdplib_connection_get_disconnect_info(m_connection, &information) : RDPLIB_ERROR_NOT_USABLE;
+}
+
+int RDPConnection::GetSnapshot(Snapshot &snapshot) const
+{
+	snapshot = Snapshot{};
+	if (m_connection == nullptr)
+		return RDPLIB_ERROR_NOT_USABLE;
+
+	Snapshot captured;
+	int result = GetRemoteAddress(captured.remote_address, captured.remote_port);
+	if (result != RDPLIB_OK)
+		return result;
+
+	result = GetCounters(captured.counters);
+	if (result != RDPLIB_OK)
+		return result;
+
+	result = GetStatistics(captured.performance);
+	if (result != RDPLIB_OK)
+		return result;
+
+	result = GetDisconnectInfo(captured.disconnect_info);
+	if (result != RDPLIB_OK)
+		return result;
+
+	captured.terminal_result = m_terminal_result;
+	captured.disconnect_reason = captured.disconnect_info.reason != 0
+		? captured.disconnect_info.reason
+		: m_disconnect_reason;
+	if (captured.terminal_result == NoData && captured.disconnect_reason != 0)
+		captured.terminal_result = ConnectionLost;
+
+	captured.duration_ms = static_cast<uint64>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - m_started_at
+		).count()
+	);
+
+	snapshot = captured;
+	return RDPLIB_OK;
 }
 
 int RDPConnection::SetPacketDropCallback(rdplib_packet_drop_callback_t callback, void *context)

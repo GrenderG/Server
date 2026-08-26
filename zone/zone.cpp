@@ -1415,7 +1415,7 @@ bool Zone::Process() {
 
 		EQ::InventoryProfile::CleanDirty();
 
-		LogSpawns("Running Zone::Process -> Spawn2::Process");
+		LogSpawnsDetail("Running Zone::Process -> Spawn2::Process");
 
 		iterator.Reset();
 		while (iterator.MoreElements()) {

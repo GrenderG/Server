@@ -525,13 +525,12 @@ bool Client::Process() {
 	/************ Get all packets from packet manager out queue and process them ************/
 	EQApplicationPacket *app = nullptr;
 	bool transport_ended = false;
-	uint32 disconnect_reason = 0;
 
 	if(m_stream != nullptr && client_state != CLIENT_KICKED && client_state != DISCONNECTED)
 	{
 		while(ret && m_stream != nullptr)
 		{
-			RDPStream::ReceiveResult receive_result = m_stream->Receive(&app, &disconnect_reason);
+			RDPStream::ReceiveResult receive_result = m_stream->Receive(&app);
 			if (receive_result == RDPStream::NoData)
 				break;
 
@@ -545,21 +544,17 @@ bool Client::Process() {
 			}
 
 			transport_ended = true;
-			if (receive_result == RDPStream::PeerClosed)
-			{
-				LogNetcode("Client [{}] closed its RDP connection", GetName());
-			}
-			else
-			{
-				LogNetcode("Client [{}] lost its RDP connection, reason [{:#010x}]", GetName(), disconnect_reason);
-			}
 			break;
 		}
 	}
 
 	if (transport_ended)
 	{
-		CloseStream();
+		CloseStream(
+			m_pending_zone_transfer.phase == ZoneTransferPhase::AwaitingDeleteSpawn
+				? RDPConnectionDisposition::ZoneTransfer
+				: RDPConnectionDisposition::Linkdead
+		);
 		if (FinishPendingZoneTransfer() && FinishRequestedRemoval())
 			return false;
 	}
@@ -617,6 +612,7 @@ void Client::FinishLogout()
 
 void Client::FinishDisconnect()
 {
+	bool kicked = client_state == CLIENT_KICKED;
 	client_state = DISCONNECTED;
 
 	if (ClientDataLoaded())
@@ -646,7 +642,15 @@ void Client::FinishDisconnect()
 
 	FinishRemoval();
 	UpdateWho(world_status);
-	CloseStream();
+
+	RDPConnectionDisposition disposition = RDPConnectionDisposition::Offline;
+	if (kicked)
+		disposition = RDPConnectionDisposition::Kick;
+	else if (m_removal_disposition == ClientRemovalDisposition::ReturnToWorld)
+		disposition = RDPConnectionDisposition::Camp;
+	else if (m_removal_disposition == ClientRemovalDisposition::ZoneTransfer)
+		disposition = RDPConnectionDisposition::ZoneTransfer;
+	CloseStream(disposition);
 }
 
 void Client::FinishRemoval()

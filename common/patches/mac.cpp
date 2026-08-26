@@ -198,13 +198,13 @@ namespace Mac {
 		}
 		OUT(LastModulated);
 
-		LogNetcode("[STRUCTS] Player Profile Packet is {} bytes uncompressed", sizeof(structs::PlayerProfile_Struct));
+		LogNetcodeDetail("[STRUCTS] Player Profile Packet is {} bytes uncompressed", sizeof(structs::PlayerProfile_Struct));
 
 		CRC32::SetEQChecksum(__packet->pBuffer, sizeof(structs::PlayerProfile_Struct)-4);
 		auto outapp = new EQApplicationPacket(OP_PlayerProfile, 8192);
 		outapp->size = DeflatePacket((unsigned char*)__packet->pBuffer, sizeof(structs::PlayerProfile_Struct), outapp->pBuffer, 8192);
 		EncryptProfilePacket(outapp->pBuffer, outapp->size);
-		LogNetcode("[STRUCTS] Player Profile Packet is {} bytes compressed", outapp->size);
+		LogNetcodeDetail("[STRUCTS] Player Profile Packet is {} bytes compressed", outapp->size);
 		result->SetPacket(&outapp);
 		delete[] __emu_buffer;
 		delete __packet;

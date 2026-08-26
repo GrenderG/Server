@@ -1116,7 +1116,7 @@ void Client::QueuePacket(const EQApplicationPacket* app, bool ack_req) {
 	if (app == nullptr)
 		return;
 
-	LogNetcode("Sending EQApplicationPacket OpCode {:#04x}", app->GetOpcode());
+	LogNetcodeDetail("Sending EQApplicationPacket OpCode {:#04x}", app->GetOpcode());
 
 	EQApplicationPacket *copy = app->Copy();
 	SendToStream(&copy, ack_req);

@@ -18,6 +18,8 @@ class EQPacketTranslator;
 class RDPStream
 {
 public:
+	using ConnectionSnapshot = RDPConnection::Snapshot;
+
 	enum ReceiveResult
 	{
 		NoData,
@@ -67,6 +69,7 @@ public:
 
 	int GetRemoteAddress(uint8 address[4], uint16 &port) const;
 	int GetStatistics(rdplib_connection_perf_stats_t &statistics) const;
+	int GetConnectionSnapshot(ConnectionSnapshot &snapshot) const;
 
 	// The callback runs under the connection lock during an immediate send or on the RDP I/O thread.  Passing nullptr waits for an active call and removes it.
 	int SetPacketDropCallback(rdplib_packet_drop_callback_t callback, void *context = nullptr);
