@@ -51,6 +51,8 @@ extern volatile bool is_zone_loaded;
 extern WorldServer worldserver;
 extern uint32 numclients;
 
+constexpr uint16 MaxEntityID = 4999;
+
 Entity::Entity()
 {
 	id = 0;
@@ -244,6 +246,8 @@ const Encounter* Entity::CastToEncounter() const
 
 EntityList::EntityList()
 	:
+	tsFirstSpawnOnQueue(0xFFFFFFFF),
+	NumSpawnsOnQueue(0),
 	object_timer(5000),
 	door_timer(5000),
 	corpse_timer(2000),
@@ -254,10 +258,10 @@ EntityList::EntityList()
 {
 
 
-	// set up ids between 1 and 1500
+	// Entity IDs accepted by the client are 1 through 4999.
 	// neither client or server performs well if you have
 	// enough entities to exhaust this list
-	for (uint16 i = 1; i <= 4999; i++)
+	for (uint16 i = 1; i <= MaxEntityID; i++)
 		free_ids.push(i);
 }
 
@@ -687,6 +691,7 @@ void EntityList::AddCorpse(Corpse *corpse, uint32 in_id)
 	else
 		corpse->SetID(in_id);
 
+	corpse->SetSpawned();
 	corpse->CalcCorpseName();
 	corpse_list.emplace(std::pair<uint16, Corpse *>(corpse->GetID(), corpse));
 
@@ -1307,22 +1312,53 @@ Doors *EntityList::GetDoorsByDoorID(uint32 id)
 	return nullptr;
 }
 
+bool EntityList::IsEntityIDOccupied(uint16 id) const
+{
+	if (id == 0)
+		return true;
+
+	return client_list.count(id) != 0 ||
+		mob_list.count(id) != 0 ||
+		npc_list.count(id) != 0 ||
+		corpse_list.count(id) != 0 ||
+		object_list.count(id) != 0 ||
+		door_list.count(id) != 0 ||
+		trap_list.count(id) != 0 ||
+		beacon_list.count(id) != 0 ||
+		encounter_list.count(id) != 0;
+}
+
 uint16 EntityList::GetFreeID()
 {
-	if (free_ids.empty()) { // hopefully this will never be true
-		// The client has a hard cap on entity count some where
-		// Neither the client or server performs well with a lot entities either
-		uint16 newid = 1500;
-		while (true) {
-			newid++;
-			if (GetID(newid) == nullptr)
-				return newid;
-		}
+	while (!free_ids.empty()) {
+		const uint16 candidate = free_ids.front();
+		free_ids.pop();
+
+		if (!IsEntityIDOccupied(candidate))
+			return candidate;
 	}
 
-	uint16 newid = free_ids.front();
-	free_ids.pop();
-	return newid;
+	LogError(
+		"Entity ID free queue exhausted: "
+		"clients [{}], mobs [{}], NPCs [{}], corpses [{}], objects [{}], "
+		"doors [{}], traps [{}], beacons [{}], encounters [{}]",
+		client_list.size(),
+		mob_list.size(),
+		npc_list.size(),
+		corpse_list.size(),
+		object_list.size(),
+		door_list.size(),
+		trap_list.size(),
+		beacon_list.size(),
+		encounter_list.size()
+	);
+
+	uint16 newid = 1500;
+	while (true) {
+		newid++;
+		if (!IsEntityIDOccupied(newid))
+			return newid;
+	}
 }
 
 // if no language skill is specified, sent with 100 skill
@@ -2281,13 +2317,13 @@ void EntityList::RemoveAllMobs()
 {
 	auto it = mob_list.begin();
 	while (it != mob_list.end()) {
-		if (!it->second) {
-			++it;
-			continue;
-		}
+		const uint16 entity_id = it->first;
+
 		safe_delete(it->second);
-		free_ids.push(it->first);
 		it = mob_list.erase(it);
+
+		if (!IsEntityIDOccupied(entity_id))
+			free_ids.push(entity_id);
 	}
 }
 
@@ -2391,6 +2427,20 @@ void EntityList::RemoveAllTraps()
 		safe_delete(it->second);
 		free_ids.push(it->first);
 		it = trap_list.erase(it);
+	}
+}
+
+void EntityList::RemoveAllBeacons()
+{
+	auto it = beacon_list.begin();
+	while (it != beacon_list.end()) {
+		const uint16 entity_id = it->first;
+
+		safe_delete(it->second);
+		it = beacon_list.erase(it);
+
+		if (!IsEntityIDOccupied(entity_id))
+			free_ids.push(entity_id);
 	}
 }
 
@@ -2585,8 +2635,13 @@ bool EntityList::RemoveRaid(uint32 delete_id)
 
 void EntityList::Clear()
 {
+	SpawnQueue.Clear();
+	tsFirstSpawnOnQueue = 0xFFFFFFFF;
+	NumSpawnsOnQueue = 0;
+
 	RemoveAllClients();
 	entity_list.RemoveAllTraps(); //we can have child npcs so we go first
+	entity_list.RemoveAllBeacons();
 	entity_list.RemoveAllNPCs();
 	entity_list.RemoveAllMobs();
 	entity_list.RemoveAllCorpses();

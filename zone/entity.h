@@ -276,6 +276,7 @@ public:
 	void	RemoveAllObjects();
 	void	RemoveAllLocalities();
 	void	RemoveAllRaids();
+	void	RemoveAllBeacons();
 	void	RemoveAllEncounters();
 	void	DestroyTempPets(Mob *owner);
 	int16	CountTempPets(Mob *owner);
@@ -473,6 +474,7 @@ protected:
 	void	Depop(bool StartSpawnTimer = false);
 
 private:
+	bool	IsEntityIDOccupied(uint16 id) const;
 	void	AddToSpawnQueue(uint16 entityid, NewSpawn_Struct** app);
 	void	CheckSpawnQueue();
 

@@ -418,15 +418,11 @@ Mob::~Mob()
 	}
 
 	const uint16 entity_id = GetID();
-	if (entity_id != 0)
+	if (entity_id != 0 && Spawned())
 	{
-		Corpse *corpse = entity_list.GetCorpseByID(entity_id);
-		if (corpse == nullptr || !corpse->IsPlayerCorpse())
-		{
-			EQApplicationPacket app;
-			CreateDespawnPacket(&app, !IsCorpse());
-			entity_list.QueueClients(this, &app, true);
-		}
+		EQApplicationPacket app;
+		CreateDespawnPacket(&app, !IsCorpse());
+		entity_list.QueueClients(this, &app, true);
 	}
 
 	entity_list.RemoveFromTargets(this);
