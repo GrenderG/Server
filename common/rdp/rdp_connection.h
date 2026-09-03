@@ -53,6 +53,7 @@ public:
 		// Application-observed lifetime beginning when the rdplib handle was wrapped.
 		uint64 duration_ms = 0;
 		ReceiveResult terminal_result = NoData;
+		int terminal_send_result = RDPLIB_OK;
 		uint32 disconnect_reason = 0;
 		rdplib_disconnect_info_t disconnect_info = {};
 		rdplib_connection_counters_t counters = {};
@@ -94,6 +95,7 @@ private:
 
 	rdplib_connection_t *m_connection;
 	ReceiveResult m_terminal_result;
+	int m_terminal_send_result;
 	uint32 m_disconnect_reason;
 	std::chrono::steady_clock::time_point m_started_at;
 };

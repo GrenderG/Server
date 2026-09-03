@@ -1,4 +1,4 @@
-// Copyright (c) 2026 solar@heliacal.net
+// Copyright (c) 2026 solar
 // SPDX-License-Identifier: MIT
 
 // Raw interface to the recovered RDP implementation. Use rdplib.h unless an
@@ -223,7 +223,17 @@ uint32_t rdp_get_serial_stall_time(rdp_t *rdp);
 
 static connection_t *rdp_lock_addr(rdp_t *rdp, struct sockaddr *sa)
 {
-    return connhash_lock(&rdp->addr_map, sa);
+    connection_t *c;
+
+    c = connhash_lock(&rdp->addr_map, sa);
+#ifndef RDPLIB_SOURCE_FAITHFUL
+    if (c && c->cn_abort)
+    {
+        rdp_unlock(c);
+        c = NULL;
+    }
+#endif
+    return c;
 }
 
 static connection_t *rdp_lock_connection(connection_t *c)

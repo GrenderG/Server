@@ -903,12 +903,42 @@ std::string FormatRDPEndpoint(const uint8 address[4], uint16 port)
 	);
 }
 
+std::string FormatRDPSendResult(int result)
+{
+	if (result == RDPLIB_OK)
+		return "None";
+
+	const char *result_name = "Unknown";
+	switch (result)
+	{
+	case RDPLIB_CONNECTION_SEND_NOT_CONNECTED:
+		result_name = "NotConnected";
+		break;
+	case RDPLIB_CONNECTION_SEND_BUFFER_FULL:
+		result_name = "BufferFull";
+		break;
+	case RDPLIB_CONNECTION_SEND_HISTORY_FULL:
+		result_name = "HistoryFull";
+		break;
+	case RDPLIB_CONNECTION_SEND_FIN_SENT:
+		result_name = "FINAlreadySent";
+		break;
+	case RDPLIB_CONNECTION_SEND_PEER_STOPPED:
+		result_name = "PeerStopped";
+		break;
+	}
+
+	return fmt::format("{}({})", result_name, result);
+}
+
 std::string FormatRDPTransport(const RDPStream::ConnectionSnapshot &snapshot)
 {
 	if (snapshot.terminal_result == RDPConnection::PeerClosed)
 		return "PeerFIN";
 	if (snapshot.terminal_result != RDPConnection::ConnectionLost)
 		return "ServerCloseRequested";
+	if (snapshot.disconnect_info.reason == 0 && snapshot.terminal_send_result != RDPLIB_OK)
+		return "SendRejected";
 
 	const char *reason_name = "Unknown";
 	switch (snapshot.disconnect_reason)
@@ -1039,8 +1069,8 @@ void Client::LogRDPConnectionSummary(RDPConnectionDisposition disposition) const
 
 	LogInfo(
 		"RDP connection finished: character=[{}:{}] peer=[{}] duration=[{}] "
-		"transport=[{}] disposition=[{}] tx=[{} / {} packets] "
-		"retransmitted=[{} / {} packets] rx_unique=[{} / {} packets] "
+		"transport=[{}] disposition=[{}] terminal_send=[{}] "
+		"tx=[{} / {} packets] retransmitted=[{} / {} packets] rx_unique=[{} / {} packets] "
 		"duplicate=[{} / {} packets] out_of_sequence=[{} / {} packets] "
 		"discarded=[{}] rtt=[{}] send_queue=[{}, stall {} ms]",
 		GetName(),
@@ -1049,6 +1079,7 @@ void Client::LogRDPConnectionSummary(RDPConnectionDisposition disposition) const
 		FormatRDPDuration(snapshot.duration_ms),
 		FormatRDPTransport(snapshot),
 		disposition_name,
+		FormatRDPSendResult(snapshot.terminal_send_result),
 		FormatRDPByteCount(tx_bytes),
 		Strings::Commify(tx_packets),
 		FormatRDPByteCount(counters.reliable_bytes_retransmitted),

@@ -41,6 +41,7 @@ void RDPMessage::Reset(rdplib_message_t *message)
 RDPConnection::RDPConnection(rdplib_connection_t *connection)
 	: m_connection(connection),
 	  m_terminal_result(NoData),
+	  m_terminal_send_result(RDPLIB_OK),
 	  m_disconnect_reason(0),
 	  m_started_at(std::chrono::steady_clock::now())
 {
@@ -87,6 +88,7 @@ int RDPConnection::Send(const void *data, uint32 bytes, uint32 stream, uint32 fl
 	if (connection_lost)
 	{
 		m_terminal_result = ConnectionLost;
+		m_terminal_send_result = result;
 		m_disconnect_reason = RDPLIB_DISCONNECT_REASON_SEND_ERROR;
 	}
 
@@ -212,6 +214,7 @@ int RDPConnection::GetSnapshot(Snapshot &snapshot) const
 		return result;
 
 	captured.terminal_result = m_terminal_result;
+	captured.terminal_send_result = m_terminal_send_result;
 	captured.disconnect_reason = captured.disconnect_info.reason != 0
 		? captured.disconnect_info.reason
 		: m_disconnect_reason;

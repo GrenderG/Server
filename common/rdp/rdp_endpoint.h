@@ -15,9 +15,9 @@ public:
 	RDPEndpoint(const RDPEndpoint &) = delete;
 	RDPEndpoint &operator=(const RDPEndpoint &) = delete;
 
-	// expected_connections should be 1 for a client with a single peer.  any other value selects the 2048 bucket connection table; this is not a connection limit
+	// expected_connections is a sizing hint, not a limit. Use 1 for a single peer; other values select the normal connection table and size the event queue.
 	// a nonzero local_port requests 4 MiB send and receive socket buffers.  zero retains operating system defaults for client endpoints
-	int Open(RDPRuntime &runtime, uint16 local_port, uint32 expected_connections = 100, uint32 flags = RDPLIB_USE_CRC);
+	int Open(RDPRuntime &runtime, uint16 local_port, uint32 expected_connections = 1000, uint32 flags = RDPLIB_USE_CRC);
 	int Close();
 	bool IsOpen() const
 	{
