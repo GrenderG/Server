@@ -18,6 +18,8 @@ public:
 	// expected_connections is a sizing hint, not a limit. Use 1 for a single peer; other values select the normal connection table and size the event queue.
 	// a nonzero local_port requests 4 MiB send and receive socket buffers.  zero retains operating system defaults for client endpoints
 	int Open(RDPRuntime &runtime, uint16 local_port, uint32 expected_connections = 1000, uint32 flags = RDPLIB_USE_CRC);
+	int Open(RDPRuntime &runtime, uint16 local_port, rdplib_arrival_ready_callback_t arrival_ready_callback,
+		void *arrival_ready_context, uint32 expected_connections = 1000, uint32 flags = RDPLIB_USE_CRC);
 	int Close();
 	bool IsOpen() const
 	{

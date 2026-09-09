@@ -35,23 +35,32 @@ RDPEndpoint::~RDPEndpoint()
 
 int RDPEndpoint::Open(RDPRuntime &runtime, uint16 local_port, uint32 expected_connections, uint32 flags)
 {
+	return Open(runtime, local_port, nullptr, nullptr, expected_connections, flags);
+}
+
+int RDPEndpoint::Open(RDPRuntime &runtime, uint16 local_port, rdplib_arrival_ready_callback_t arrival_ready_callback,
+	void *arrival_ready_context, uint32 expected_connections, uint32 flags)
+{
 	if (m_endpoint != nullptr)
 		return RDPLIB_ERROR_BUSY;
 	if (!runtime.IsOpen())
 		return RDPLIB_ERROR_INVALID_ARGUMENT;
 
-	// use default buffer sizes for client usage
-	if (local_port == 0)
-		return rdplib_endpoint_create(runtime.m_runtime, &m_endpoint, local_port, expected_connections, flags);
-
-	// request larger buffer sizes for server usage
 	rdplib_endpoint_options_t options{};
 	options.structure_size = sizeof(options);
-	options.receive_socket_buffer_bytes = ServerSocketBufferSize;
-	options.send_socket_buffer_bytes = ServerSocketBufferSize;
+	options.arrival_ready_callback = arrival_ready_callback;
+	options.arrival_ready_context = arrival_ready_context;
+
+	// use default buffer sizes for client usage
+	if (local_port != 0)
+	{
+		// request larger buffer sizes for server usage
+		options.receive_socket_buffer_bytes = ServerSocketBufferSize;
+		options.send_socket_buffer_bytes = ServerSocketBufferSize;
+	}
 
 	int result = rdplib_endpoint_create_ex(runtime.m_runtime, &m_endpoint, local_port, expected_connections, flags, &options);
-	if (result != RDPLIB_OK)
+	if (result != RDPLIB_OK || local_port == 0)
 		return result;
 
 	// receive buffer, SO_RCVBUF

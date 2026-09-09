@@ -33,11 +33,19 @@ typedef struct rdplib_endpoint_t rdplib_endpoint_t;
 typedef struct rdplib_connection_t rdplib_connection_t;
 typedef struct rdplib_message_t rdplib_message_t;
 
+// Arrival readiness only. Not one callback per message.
+// May run concurrently, including before endpoint creation returns.
+// Return promptly. Do not call rdplib or throw.
+// Keep the context alive until endpoint destruction succeeds.
+typedef void (*rdplib_arrival_ready_callback_t)(void *context);
+
 typedef struct rdplib_endpoint_options_t
 {
     uint32_t structure_size;
     uint32_t receive_socket_buffer_bytes;
     uint32_t send_socket_buffer_bytes;
+    rdplib_arrival_ready_callback_t arrival_ready_callback;
+    void *arrival_ready_context;
 } rdplib_endpoint_options_t;
 
 typedef struct rdplib_endpoint_input_rate_t
@@ -127,7 +135,9 @@ RDPLIB_API int rdplib_runtime_destroy(rdplib_runtime_t *runtime);
 // Normal endpoints are always IPv4.  Flags may contain RDPLIB_USE_CRC and RDPLIB_USE_ENCRYPTION.  Socket buffers retain the operating system defaults.
 RDPLIB_API int rdplib_endpoint_create(rdplib_runtime_t *runtime, rdplib_endpoint_t **output, uint16_t local_port, uint32_t expected_connections, uint32_t flags);
 
-// Options may be null.  Set structure_size to sizeof(rdplib_endpoint_options_t).  A socket buffer value of 0 retains the operating system default.
+// Options may be null. Zero initialize them and set structure_size to sizeof(rdplib_endpoint_options_t).
+// A socket buffer value of 0 retains the operating system default.
+// A null callback disables arrival notification. Source faithful builds do not support callbacks.
 RDPLIB_API int rdplib_endpoint_create_ex(rdplib_runtime_t *runtime, rdplib_endpoint_t **output, uint16_t local_port, uint32_t expected_connections, uint32_t flags,
                                          const rdplib_endpoint_options_t *options);
 
@@ -173,6 +183,11 @@ RDPLIB_API int rdplib_connection_enable_keepalive_with_interval(rdplib_connectio
 // or on the I/O thread, and must not reenter rdplib.
 // The source faithful build returns RDPLIB_ERROR_NOT_SUPPORTED.
 RDPLIB_API int rdplib_connection_set_packet_drop_callback(rdplib_connection_t *connection, rdplib_packet_drop_callback_t callback, void *context);
+
+// Returns the first queued message without removing it, or NULL for an empty queue or null connection.
+// Borrowed until popped or connection cleanup. Do not release it.
+// Call from the endpoint's owning application context.
+RDPLIB_API const rdplib_message_t *rdplib_connection_peek_message(const rdplib_connection_t *connection);
 
 // Returns a message owned by the caller, or NULL.  Release every returned message.
 RDPLIB_API rdplib_message_t *rdplib_connection_pop_message(rdplib_connection_t *connection);

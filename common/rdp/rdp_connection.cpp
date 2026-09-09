@@ -78,9 +78,13 @@ int RDPConnection::Send(const void *data, uint32 bytes, uint32 stream, uint32 fl
 		return RDPLIB_ERROR_NOT_USABLE;
 
 	int result = rdplib_connection_send(m_connection, data, bytes, stream, flags);
-	bool reliable = (flags & RDPLIB_SEND_RELIABLE) != 0;
+
+	// history full and buffer full are transient states - the protocol could make progress if
+	// outstanding messages get ACKed, however we treat this as failure and prefer to shed the
+	// stalling client rather than continue to build additional backlog for a connection that
+	// has fallen behind by such a large margin.
 	bool connection_lost = result == RDPLIB_CONNECTION_SEND_HISTORY_FULL ||
-		(result == RDPLIB_CONNECTION_SEND_BUFFER_FULL && reliable) ||
+		result == RDPLIB_CONNECTION_SEND_BUFFER_FULL ||
 		result == RDPLIB_CONNECTION_SEND_NOT_CONNECTED ||
 		result == RDPLIB_CONNECTION_SEND_FIN_SENT ||
 		result == RDPLIB_CONNECTION_SEND_PEER_STOPPED;
@@ -144,6 +148,11 @@ RDPConnection::ReceiveResult RDPConnection::Receive(RDPMessage *message, uint32 
 
 	message->Reset(received_message);
 	return MessageReceived;
+}
+
+const rdplib_message_t *RDPConnection::PeekMessage() const
+{
+	return rdplib_connection_peek_message(m_connection);
 }
 
 void RDPConnection::DiscardMessages()

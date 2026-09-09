@@ -394,6 +394,8 @@ int rdplib_endpoint_create_ex(rdplib_runtime_t *runtime, rdplib_endpoint_t **out
     rdplib_endpoint_t *endpoint;
     uint32_t receive_socket_buffer_bytes = 0;
     uint32_t send_socket_buffer_bytes = 0;
+    rdplib_arrival_ready_callback_t arrival_ready_callback = NULL;
+    void *arrival_ready_context = NULL;
     int result;
 
     if (!runtime || runtime != rdplib_active_runtime || !output || (flags & ~(RDPLIB_USE_CRC | RDPLIB_USE_ENCRYPTION)) != 0)
@@ -412,7 +414,16 @@ int rdplib_endpoint_create_ex(rdplib_runtime_t *runtime, rdplib_endpoint_t **out
         }
         receive_socket_buffer_bytes = options->receive_socket_buffer_bytes;
         send_socket_buffer_bytes = options->send_socket_buffer_bytes;
+        arrival_ready_callback = options->arrival_ready_callback;
+        arrival_ready_context = options->arrival_ready_context;
     }
+
+#ifdef RDPLIB_SOURCE_FAITHFUL
+    if (arrival_ready_callback)
+    {
+        return RDPLIB_ERROR_NOT_SUPPORTED;
+    }
+#endif
 
     endpoint = (rdplib_endpoint_t *)rdplib_platform_malloc(sizeof(*endpoint));
     if (!endpoint)
@@ -422,7 +433,8 @@ int rdplib_endpoint_create_ex(rdplib_runtime_t *runtime, rdplib_endpoint_t **out
     memset(endpoint, 0, sizeof(*endpoint));
     endpoint->runtime = runtime;
 
-    result = (int)rdplib_rdp_create(&endpoint->raw, local_port, expected_connections, flags | RDP_CREATE_REQUIRE_IPV4, receive_socket_buffer_bytes, send_socket_buffer_bytes);
+    result = (int)rdplib_rdp_create(&endpoint->raw, local_port, expected_connections, flags | RDP_CREATE_REQUIRE_IPV4,
+                                  receive_socket_buffer_bytes, send_socket_buffer_bytes, arrival_ready_callback, arrival_ready_context);
     if (result != 0)
     {
         rdplib_platform_free(endpoint);
@@ -775,6 +787,15 @@ int rdplib_connection_set_packet_drop_callback(rdplib_connection_t *connection, 
     umutex_unlock(&raw->cn_lock);
     return result;
 #endif
+}
+
+const rdplib_message_t *rdplib_connection_peek_message(const rdplib_connection_t *connection)
+{
+    if (!connection)
+    {
+        return NULL;
+    }
+    return connection->message_head;
 }
 
 rdplib_message_t *rdplib_connection_pop_message(rdplib_connection_t *connection)

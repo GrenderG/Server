@@ -76,6 +76,9 @@ public:
 	// This does not block.  MessageReceived gives ownership of the message contents to RDPMessage.
 	ReceiveResult Receive(RDPMessage *message, uint32 *disconnect_reason = nullptr);
 
+	// borrowed until Receive or Close, do not release
+	const rdplib_message_t *PeekMessage() const;
+
 	// Releases the application connection handle and returns immediately.
 	void Close(uint32 linger_timeout_ms);
 
